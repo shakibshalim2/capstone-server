@@ -6,6 +6,10 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const saltRounds = 10;
 
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+
+
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { GridFSBucket } = require('mongodb');
@@ -14,6 +18,37 @@ const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); 
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+const storage = multer.memoryStorage();
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Allow specific file types
+    const allowedTypes = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf', 'application/msword', 
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/plain', 'text/csv'
+    ];
+    
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('File type not allowed'), false);
+    }
+  }
+});
 
 const {
   ADMIN_USERNAME,
@@ -40,6 +75,7 @@ if (!ADMIN_USERNAME || !ADMIN_PASSWORD || !JWT_SECRET || !DEFAULT_STUDENT_PASSWO
   process.exit(1);
 }
 
+
 mongoose.connect(
   `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}/${process.env.DB_NAME}?retryWrites=true&w=majority&appName=Cluster0`,
   {
@@ -49,6 +85,29 @@ mongoose.connect(
 )
 .then(() => console.log('Connected to MongoDB'))
 .catch(err => console.error('Could not connect to MongoDB', err));
+
+
+// ✅ ADD THIS HELPER FUNCTION
+const createNotification = async (recipientId, type, title, message, data = {}) => {
+  try {
+    const notification = new Notification({
+      recipientId,
+      type,
+      title,
+      message,
+      data,
+      read: false,
+      createdAt: new Date()
+    });
+
+    await notification.save();
+    console.log(`📬 Notification created for user ${recipientId}: ${title}`);
+    return notification;
+  } catch (error) {
+    console.error('Error creating notification:', error);
+    return null;
+  }
+};
 
 
 // Notification Schema
@@ -100,25 +159,43 @@ const createTeamRequestNotification = async ({
   }
 };
 
+const autoGroupSettingsSchema = new mongoose.Schema({
+  enabled: { type: Boolean, default: false },
+  minCreditsRequired: { type: Number, default: 95 },
+  allowSoloGroups: { type: Boolean, default: true },
+  checkIntervalMinutes: { type: Number, default: 30 },
+  autoCreateThreshold: { type: Number, default: 4 },
+  lastCheck: { type: Date, default: Date.now },
+  totalAutoGroups: { type: Number, default: 0 }
+});
 
+const AutoGroupSettings = mongoose.model('AutoGroupSettings', autoGroupSettingsSchema);
 // Chat Message Schema
 const chatMessageSchema = new mongoose.Schema({
   teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
   senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   senderName: { type: String, required: true },
   senderStudentId: { type: String, required: true },
-  message: { type: String, required: true },
-  messageType: { type: String, enum: ['text', 'file'], default: 'text' },
-  fileInfo: {
-    fileName: String,
-    fileSize: String,
-    fileType: String,
-    fileUrl: String
+  message: { type: String, default: '' },
+  messageType: {
+    type: String,
+    enum: ['text', 'file', 'image'],
+    default: 'text'
+  },
+  file: {
+    public_id: String,
+    url: String,
+    originalName: String,
+    size: Number,
+    mimetype: String,
+    format: String,
+    resource_type: String
   },
   timestamp: { type: Date, default: Date.now },
   editedAt: Date,
   isEdited: { type: Boolean, default: false }
 }, { timestamps: true });
+
 
 const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
 
@@ -280,6 +357,8 @@ const facultySchema = new mongoose.Schema({
   office: String,
   joined: { type: Date, default: Date.now },
   password: { type: String, required: true },
+  profilePicture: { type: String },
+  visibleToStudents: { type: Boolean, default: false },
   resetToken: String,
   resetTokenExpiry: Date
 }, { strict: false }); 
@@ -292,6 +371,16 @@ const activationRequestSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'rejected', 'cancelled'], 
     default: 'pending' }
 });
+
+// Team Rejection Tracking Schema
+const teamRejectionSchema = new mongoose.Schema({
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+  teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
+  rejectionCount: { type: Number, default: 0 },
+  lastRejectedDate: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+const TeamRejection = mongoose.model('TeamRejection', teamRejectionSchema);
 
 // Updated Student Schema with avatar field for base64 storage
 // In server.js - Fix the student schema
@@ -585,6 +674,77 @@ app.post('/api/faculty/login', async (req, res) => {
   }
 });
 
+
+app.put('/api/faculty/toggle-visibility', authenticate, async (req, res) => {
+  try {
+    const { visibleToStudents } = req.body;
+    
+    if (typeof visibleToStudents !== 'boolean') {
+      return res.status(400).json({ 
+        message: 'visibleToStudents must be a boolean value' 
+      });
+    }
+
+    const updatedFaculty = await Faculty.findByIdAndUpdate(
+      req.user.id,
+      { visibleToStudents },
+      { new: true, select: '-password' }
+    );
+
+    if (!updatedFaculty) {
+      return res.status(404).json({ message: 'Faculty not found' });
+    }
+
+    console.log(`Faculty visibility updated: ${updatedFaculty.email} - visible: ${visibleToStudents}`);
+    
+    res.json({ 
+      success: true, 
+      message: `Profile ${visibleToStudents ? 'is now visible to' : 'is now hidden from'} students`,
+      visibleToStudents: updatedFaculty.visibleToStudents
+    });
+  } catch (error) {
+    console.error('Toggle visibility error:', error);
+    res.status(500).json({ message: 'Server error while updating visibility' });
+  }
+});
+
+// ✅ NEW ENDPOINT: Get visible faculty for students
+app.get('/api/faculty/visible', authenticate, async (req, res) => {
+  try {
+    // Verify the requester is a student
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Access denied: Students only' });
+    }
+
+    const visibleFaculty = await Faculty.find({
+      status: 'Active',
+      visibleToStudents: true
+    }).select('-password -resetToken -resetTokenExpiry');
+
+    res.json(visibleFaculty);
+  } catch (err) {
+    console.error('Error fetching visible faculty:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
+// ✅ MIGRATION ENDPOINT (run once to set default visibility for existing faculty)
+app.post('/api/admin/migrate-faculty-visibility', authenticate, async (req, res) => {
+  try {
+    const result = await Faculty.updateMany(
+      { visibleToStudents: { $exists: false } },
+      { $set: { visibleToStudents: true } }
+    );
+    
+    res.json({ 
+      success: true, 
+      message: `Updated ${result.modifiedCount} faculty records with default visibility` 
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Migration failed', error: error.message });
+  }
+});
 app.post('/api/faculty', authenticate, async (req, res) => {
   try {
     const { name, email, department, role } = req.body;
@@ -713,24 +873,89 @@ app.post('/api/faculty/import', async (req, res) => {
   }
 });
 
-app.put('/api/faculty/change-password', async (req, res) => {
+app.put('/api/faculty/change-password', authenticate, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const token = req.headers.authorization.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    
-    const faculty = await Faculty.findById(decoded.id);
-    if (!faculty) return res.status(404).json({ message: 'Faculty not found' });
+    const facultyId = req.user.id;
 
-    const validPassword = await bcrypt.compare(currentPassword, faculty.password);
-    if (!validPassword) return res.status(400).json({ message: 'Invalid current password' });
+    // Validation
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password and new password are required',
+        field: !currentPassword ? 'currentPassword' : 'newPassword'
+      });
+    }
 
-    faculty.password = await bcrypt.hash(newPassword, 10);
-    await faculty.save();
+    // Password strength validation
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters long',
+        field: 'newPassword'
+      });
+    }
 
-    res.json({ message: 'Password updated successfully' });
-  } catch (err) {
-    res.status(500).json({ message: 'Server error' });
+    if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must contain uppercase, lowercase, and number',
+        field: 'newPassword'
+      });
+    }
+
+    // Find faculty
+    const faculty = await Faculty.findById(facultyId);
+    if (!faculty) {
+      return res.status(404).json({
+        success: false,
+        message: 'Faculty not found'
+      });
+    }
+
+    // Verify current password
+    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, faculty.password);
+    if (!isCurrentPasswordValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password is incorrect',
+        field: 'currentPassword'
+      });
+    }
+
+    // Check if new password is same as current
+    const isSamePassword = await bcrypt.compare(newPassword, faculty.password);
+    if (isSamePassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be different from current password',
+        field: 'newPassword'
+      });
+    }
+
+    // Hash new password
+    const saltRounds = 12;
+    const hashedNewPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update password
+    await Faculty.findByIdAndUpdate(facultyId, {
+      password: hashedNewPassword,
+      passwordChangedAt: new Date()
+    });
+
+    console.log(`Password changed for faculty: ${faculty.email}`);
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while changing password'
+    });
   }
 });
 
@@ -781,6 +1006,159 @@ app.get('/api/faculty', authenticate, async (req, res) => {
   }
 });
 
+
+
+app.get('/api/faculty/me', authenticate, async (req, res) => {
+  const faculty = await Faculty.findById(req.user.id).select('-password');
+  if (!faculty) return res.status(404).json({ message: 'Faculty not found' });
+  res.json(faculty);
+});
+
+app.put('/api/faculty/me', authenticate, async (req, res) => {
+  try {
+    const { name, phone, profilePicture } = req.body;
+    const updateData = {};
+    const errors = [];
+
+    // Validate name
+    if (name !== undefined) {
+      if (!name || name.trim().length < 2) {
+        errors.push({ field: 'name', message: 'Name must be at least 2 characters long' });
+      } else if (name.trim().length > 50) {
+        errors.push({ field: 'name', message: 'Name cannot exceed 50 characters' });
+      } else if (!/^[a-zA-Z\s.'-]+$/.test(name.trim())) {
+        errors.push({ field: 'name', message: 'Name can only contain letters, spaces, periods, apostrophes, and hyphens' });
+      } else {
+        updateData.name = name.trim();
+      }
+    }
+
+    // Validate phone
+    if (phone !== undefined && phone.trim()) {
+      // Clean the phone number by removing all spaces, dashes, and special characters except +
+      const cleanPhone = phone.replace(/[\s\-\(\)\.]/g, "");
+
+      // More flexible patterns for Bangladeshi numbers
+      const validPatterns = [
+        /^\+8801[3-9]\d{8}$/, // +8801XXXXXXXX
+        /^8801[3-9]\d{8}$/, // 8801XXXXXXXX
+        /^01[3-9]\d{8}$/, // 01XXXXXXXX
+      ];
+
+      const isValidPhone = validPatterns.some((pattern) =>
+        pattern.test(cleanPhone)
+      );
+
+      if (!isValidPhone) {
+        errors.push({
+          field: "phone",
+          message:
+            "Please enter a valid Bangladeshi mobile number (e.g., +880 1712345678)",
+        });
+      } else {
+        // Normalize phone number format before saving
+        let normalizedPhone = cleanPhone;
+        if (normalizedPhone.startsWith("0")) {
+          normalizedPhone = "+880" + normalizedPhone.substring(1);
+        } else if (normalizedPhone.startsWith("880")) {
+          normalizedPhone = "+" + normalizedPhone;
+        } else if (!normalizedPhone.startsWith("+880")) {
+          normalizedPhone = "+880" + normalizedPhone;
+        }
+        updateData.phone = normalizedPhone;
+      }
+    } else if (phone === "") {
+      // Allow clearing phone number
+      updateData.phone = "";
+    }
+
+    // Validate and handle profilePicture
+    if (profilePicture !== undefined) {
+      if (profilePicture === null || profilePicture === "") {
+        updateData.profilePicture = null; // Remove profile picture
+      } else if (typeof profilePicture === 'string' && profilePicture.startsWith('data:image/')) {
+        // Validate base64 image size (5MB limit)
+        const sizeInBytes = (profilePicture.length * 3) / 4;
+        if (sizeInBytes > 5 * 1024 * 1024) {
+          errors.push({
+            field: 'profilePicture',
+            message: 'Image size exceeds 5MB limit'
+          });
+        } else {
+          updateData.profilePicture = profilePicture;
+        }
+      } else {
+        errors.push({
+          field: 'profilePicture',
+          message: 'Invalid image format'
+        });
+      }
+    }
+
+
+    // Return validation errors
+    if (errors.length > 0) {
+      return res.status(400).json({ 
+        message: 'Validation failed',
+        errors: errors 
+      });
+    }
+
+    // Check if there are any updates to make
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ 
+        message: 'No valid updates provided' 
+      });
+    }
+
+    // Update the faculty record
+    const updatedFaculty = await Faculty.findByIdAndUpdate(
+      req.user.id,
+      updateData,
+      { 
+        new: true, 
+        runValidators: true,
+        select: '-password' // Don't return password
+      }
+    );
+
+    if (!updatedFaculty) {
+      return res.status(404).json({ message: "Faculty not found" });
+    }
+
+    console.log(`Faculty profile updated: ${updatedFaculty.email} - ${updatedFaculty.name}`);
+
+    res.json(updatedFaculty);
+
+  } catch (err) {
+    console.error("Profile update error:", err);
+    
+    // Handle mongoose validation errors
+    if (err.name === 'ValidationError') {
+      const validationErrors = Object.values(err.errors).map(e => ({
+        field: e.path,
+        message: e.message
+      }));
+      
+      return res.status(400).json({ 
+        message: 'Validation failed',
+        errors: validationErrors 
+      });
+    }
+    
+    // Handle duplicate key errors
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyPattern)[0];
+      return res.status(409).json({ 
+        message: `${field} already exists. Please use a different value.` 
+      });
+    }
+
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+
 app.put('/api/faculty/:id', authenticate, async (req, res) => {
   try {
     const faculty = await Faculty.findByIdAndUpdate(req.params.id, req.body, { new: true });
@@ -799,30 +1177,7 @@ app.delete('/api/faculty/:id', authenticate, async (req, res) => {
   }
 });
 
-app.get('/api/faculty/me', authenticate, async (req, res) => {
-  const faculty = await Faculty.findById(req.user.id).select('-password');
-  if (!faculty) return res.status(404).json({ message: 'Faculty not found' });
-  res.json(faculty);
-});
 
-app.put('/api/faculty/me', authenticate, async (req, res) => {
-  try {
-    const updatedFaculty = await Faculty.findByIdAndUpdate(
-      req.user.id,
-      req.body,
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedFaculty) {
-      return res.status(404).json({ message: "Faculty not found" });
-    }
-
-    res.json(updatedFaculty);
-  } catch (err) {
-    console.error("Profile update error:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
 
 // Student Routes
 app.post('/api/students', authenticate, async (req, res) => {
@@ -903,52 +1258,7 @@ app.put('/api/students/bulk-status', authenticate, async (req, res) => {
   }
 });
 
-app.put('/api/students/:id', authenticate, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updates = req.body;
 
-    if (updates.studentId && !/^\d{4}-\d-\d{2}-\d{3}$/.test(updates.studentId)) {
-      return res.status(400).json({ message: 'Invalid Student ID format' });
-    }
-
-    if (updates.studentId) {
-      const existingStudent = await Student.findOne({ 
-        studentId: updates.studentId,
-        _id: { $ne: id }
-      });
-      if (existingStudent) {
-        return res.status(400).json({ message: 'Student ID already exists' });
-      }
-    }
-
-    const student = await Student.findByIdAndUpdate(
-      id,
-      updates,
-      { new: true, runValidators: true }
-    ).select('-password');
-
-    if (!student) return res.status(404).json({ message: 'Student not found' });
-    
-    res.json(student); 
-
-  } catch (err) {
-    console.error('Update error:', err);
-    
-    if (err.name === 'ValidationError') {
-      const errors = Object.values(err.errors).map(e => e.message);
-      return res.status(400).json({ 
-        message: 'Validation error',
-        errors 
-      });
-    }
-    
-    res.status(500).json({ 
-      message: 'Server error',
-      error: err.message 
-    });
-  }
-});
 
 app.get('/api/students', authenticate, async (req, res) => {
   try {
@@ -1116,12 +1426,12 @@ app.post('/api/students/login', async (req, res) => {
 
     const student = await Student.findOne({ studentId }).select('+password');
     if (!student) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Student ID is not registered' });
     }
 
     const validPassword = await bcrypt.compare(password, student.password);
     if (!validPassword) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Wrong password' });
     }
 
     if (student.status !== 'Active') {
@@ -1160,6 +1470,7 @@ app.post('/api/students/login', async (req, res) => {
 });
 
 
+// Password change endpoint
 // Password change endpoint
 app.put('/api/students/change-password', authenticate, async (req, res) => {
   try {
@@ -1247,6 +1558,52 @@ app.put('/api/students/change-password', authenticate, async (req, res) => {
   }
 });
 
+app.put('/api/students/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    if (updates.studentId && !/^\d{4}-\d-\d{2}-\d{3}$/.test(updates.studentId)) {
+      return res.status(400).json({ message: 'Invalid Student ID format' });
+    }
+
+    if (updates.studentId) {
+      const existingStudent = await Student.findOne({ 
+        studentId: updates.studentId,
+        _id: { $ne: id }
+      });
+      if (existingStudent) {
+        return res.status(400).json({ message: 'Student ID already exists' });
+      }
+    }
+
+    const student = await Student.findByIdAndUpdate(
+      id,
+      updates,
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    if (!student) return res.status(404).json({ message: 'Student not found' });
+    
+    res.json(student); 
+
+  } catch (err) {
+    console.error('Update error:', err);
+    
+    if (err.name === 'ValidationError') {
+      const errors = Object.values(err.errors).map(e => e.message);
+      return res.status(400).json({ 
+        message: 'Validation error',
+        errors 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Server error',
+      error: err.message 
+    });
+  }
+});
 // Update this endpoint in server.js
 // Update this endpoint in server.js
 app.get('/api/students/me', authenticate, async (req, res) => {
@@ -1680,7 +2037,20 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
 
     await newTeam.save();
     console.log('New team created:', newTeam._id);
-
+const senderNotification = new Notification({
+      recipientId: request.senderId,
+      type: 'team_accepted',
+      title: 'Team Request Accepted!',
+      message: `${currentStudent.name} accepted your invitation to create team "${newTeam.name}"!`,
+      data: {
+        teamId: newTeam._id,
+        teamName: newTeam.name,
+        acceptedBy: currentStudent.name
+      },
+      read: false
+    });
+    
+    await senderNotification.save();
     // Update request status
     request.status = 'accepted';
     request.responseDate = new Date();
@@ -1905,6 +2275,18 @@ app.post('/api/teams/:teamId/join-request', authenticate, async (req, res) => {
       });
     }
 
+    const rejectionRecord = await TeamRejection.findOne({
+      studentId: req.user.id,
+      teamId: teamId
+    });
+
+    if (rejectionRecord && rejectionRecord.rejectionCount >= 3) {
+      return res.status(403).json({ 
+        message: `You have been rejected 3 times by team "${team.name}". No more requests allowed.`,
+        action: 'rejection_limit_reached'
+      });
+    }
+
     // Check if team is full (4 members max)
     if (team.members.length >= 4) {
       return res.status(400).json({ 
@@ -1919,9 +2301,11 @@ app.post('/api/teams/:teamId/join-request', authenticate, async (req, res) => {
       req => req.studentId.toString() === student._id.toString() && req.status === 'pending'
     );
     if (existingRequest) {
-      return res.status(400).json({ message: 'Join request already sent' });
+      return res.status(400).json({ 
+        message: 'Join request already sent',
+        requestId: existingRequest._id 
+      });
     }
-
     // UPDATED: Include additional student information
     team.joinRequests.push({
       studentId: student._id,
@@ -2018,8 +2402,63 @@ app.post('/api/teams/:teamId/handle-join-request', authenticate, async (req, res
       }
       
       joinRequest.status = 'accepted';
+      const acceptedStudent = await Student.findById(joinRequest.studentId);
+      
+      const notification = new Notification({
+        recipientId: joinRequest.studentId,
+        type: 'team_accepted', // Add this to your enum
+        title: 'Team Request Accepted!',
+        message: `Your request to join team "${team.name}" has been accepted!`,
+        data: {
+          teamId: team._id,
+          teamName: team.name,
+          acceptedBy: student.name,
+          requestId: joinRequestId
+        },
+        read: false
+      });
+      
+      await notification.save();
+      console.log(`✅ Notification sent to ${acceptedStudent.name} for team acceptance`);
+
     } else if (status === 'rejected') {
       joinRequest.status = 'rejected';
+
+       // ✅ NEW: Track rejection count
+      const rejectionRecord = await TeamRejection.findOneAndUpdate(
+        {
+          studentId: joinRequest.studentId,
+          teamId: teamId
+        },
+        {
+          $inc: { rejectionCount: 1 },
+          lastRejectedDate: new Date()
+        },
+        {
+          upsert: true,
+          new: true
+        }
+      );
+
+      console.log(`Rejection count updated for student ${joinRequest.studentId}: ${rejectionRecord.rejectionCount}/3`);
+
+      const notification = new Notification({
+        recipientId: joinRequest.studentId,
+        type: 'team_rejected',
+        title: 'Team Request Declined',
+message: rejectionRecord.rejectionCount >= 3 
+          ? `Your request to join team "${team.name}" was declined. You have reached the maximum rejection limit (3) for this team.`
+          : `Your request to join team "${team.name}" was declined. You can try again later (${rejectionRecord.rejectionCount}/3 rejections).`,
+          data: {
+          teamId: team._id,
+          teamName: team.name,
+          rejectedBy: student.name,
+          rejectionCount: rejectionRecord.rejectionCount
+        },
+        read: false
+      });
+      
+      await notification.save();
     } else {
       return res.status(400).json({ message: 'Invalid status' });
     }
@@ -2048,6 +2487,32 @@ app.post('/api/teams/:teamId/handle-join-request', authenticate, async (req, res
 
   } catch (error) {
     console.error('Handle join request error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
+// Get rejection status for teams
+app.get('/api/teams/rejection-status', authenticate, async (req, res) => {
+  try {
+    const rejections = await TeamRejection.find({
+      studentId: req.user.id
+    }).populate('teamId', 'name');
+
+    const rejectionMap = {};
+    rejections.forEach(rejection => {
+      if (rejection.teamId) {
+        rejectionMap[rejection.teamId._id] = {
+          rejectionCount: rejection.rejectionCount,
+          lastRejectedDate: rejection.lastRejectedDate,
+          canRequest: rejection.rejectionCount < 3
+        };
+      }
+    });
+
+    res.json(rejectionMap);
+  } catch (error) {
+    console.error('Get rejection status error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -2414,6 +2879,7 @@ app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
   }
 });
 
+
 app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
   try {
     const cacheKey = `requests_${req.user.id}`;
@@ -2444,10 +2910,11 @@ app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
 
 
 // Send a chat message
+// Send a chat message with file support
 app.post('/api/teams/:teamId/messages', authenticate, async (req, res) => {
   try {
     const { teamId } = req.params;
-    const { message, messageType = 'text', fileInfo } = req.body;
+    const { message, messageType = 'text', file } = req.body;
 
     // Verify team exists and user is a member
     const team = await Team.findById(teamId);
@@ -2468,9 +2935,9 @@ app.post('/api/teams/:teamId/messages', authenticate, async (req, res) => {
       senderId: req.user.id,
       senderName: student.name,
       senderStudentId: student.studentId,
-      message,
-      messageType,
-      fileInfo: messageType === 'file' ? fileInfo : undefined
+      message: message || '',
+      messageType: messageType || 'text',
+      file: file || null
     });
 
     await chatMessage.save();
@@ -2489,6 +2956,7 @@ app.post('/api/teams/:teamId/messages', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 
 // Get chat messages for a team
 app.get('/api/teams/:teamId/messages', authenticate, async (req, res) => {
@@ -2702,9 +3170,498 @@ const corsOptions = {
   optionsSuccessStatus: 200
 };
 
+// Upload file to Cloudinary
+// File upload route - FIXED VERSION
+app.post('/api/files/upload', authenticate, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const fileStr = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+    
+    const timestamp = Date.now();
+    const originalName = req.file.originalname.split('.')[0];
+    const extension = req.file.originalname.split('.').pop();
+    const uniqueFilename = `${originalName}_${timestamp}`;
+
+    // ✅ CRITICAL FIX: Use 'auto' resource_type for all files
+    const uploadResponse = await cloudinary.uploader.upload(fileStr, {
+      upload_preset: process.env.CLOUDINARY_UPLOAD_PRESET,
+      folder: `${process.env.CLOUDINARY_FOLDER}/${req.body.teamId || 'general'}`,
+      public_id: uniqueFilename,
+      resource_type: 'auto',        // ✅ This fixes the download issue
+      overwrite: false,
+      unique_filename: true,
+      use_filename: true,
+    });
+
+    res.status(200).json({
+      success: true,
+      file: {
+        public_id: uploadResponse.public_id,
+        url: uploadResponse.secure_url,  // ✅ Use secure_url directly
+        originalName: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+        format: uploadResponse.format,
+        resource_type: uploadResponse.resource_type,
+        created_at: uploadResponse.created_at,
+      }
+    });
+
+  } catch (error) {
+    console.error('File upload error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'File upload failed',
+      error: error.message 
+    });
+  }
+});
+
+
+// Delete file from Cloudinary
+app.delete('/api/files/delete/:publicId', authenticate, async (req, res) => {
+  try {
+    const { publicId } = req.params;
+    
+    const result = await cloudinary.uploader.destroy(publicId);
+    
+    if (result.result === 'ok') {
+      res.status(200).json({ 
+        success: true, 
+        message: 'File deleted successfully' 
+      });
+    } else {
+      res.status(400).json({ 
+        success: false, 
+        message: 'File deletion failed' 
+      });
+    }
+  } catch (error) {
+    console.error('File deletion error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'File deletion failed',
+      error: error.message 
+    });
+  }
+});
+
+// Optional: Dedicated download route with proper headers
+// Replace the existing /api/files/download endpoint with this:
+// Updated download endpoint with signed URLs
+app.get('/api/files/download/:publicId', authenticate, async (req, res) => {
+  try {
+    const { publicId } = req.params;
+    
+    // Generate signed URL valid for 1 minute
+    const signedUrl = cloudinary.url(publicId, {
+      resource_type: 'auto',
+      sign_url: true,
+      expires_at: Math.floor(Date.now() / 1000) + 60, // 1 minute expiration
+      type: 'authenticated'
+    });
+
+    res.redirect(signedUrl);
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(404).json({ message: 'File not found' });
+  }
+});
+
+
+
+// API Routes for Auto-Group Settings
+app.get('/api/admin/auto-group-settings', authenticate, async (req, res) => {
+  try {
+    let settings = await AutoGroupSettings.findOne({});
+    if (!settings) {
+      settings = new AutoGroupSettings();
+      await settings.save();
+    }
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/auto-group-settings', authenticate, async (req, res) => {
+  try {
+    const settingsData = req.body;
+    let settings = await AutoGroupSettings.findOne({});
+    
+    if (settings) {
+      Object.assign(settings, settingsData);
+    } else {
+      settings = new AutoGroupSettings(settingsData);
+    }
+    
+    await settings.save();
+    
+    // Restart the auto-group checker with new interval
+    restartAutoGroupChecker();
+    
+    res.json({ success: true, message: 'Auto-group settings saved successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== AUTOMATIC GROUP CREATION SYSTEM =====
+// Add this section after your API routes but before server startup
+
+// Helper function to get current semester
+const getCurrentSemester = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1; // 0-based to 1-based
+  
+  if (month >= 1 && month <= 6) {
+    return `Spring ${year}`;
+  } else if (month >= 7 && month <= 12) {
+    return `Fall ${year}`;
+  }
+  return `Academic ${year}`;
+};
+
+// Auto-group checker interval management
+let autoGroupInterval;
+
+const startAutoGroupChecker = async () => {
+  const settings = await AutoGroupSettings.findOne({});
+  if (!settings || !settings.enabled) return;
+
+  const intervalMs = settings.checkIntervalMinutes * 60 * 1000;
+  
+  autoGroupInterval = setInterval(() => {
+    createAutomaticGroups();
+  }, intervalMs);
+  
+  console.log(`🕐 Auto-group checker started with ${settings.checkIntervalMinutes} minute interval`);
+  
+  // Run initial check after 5 seconds
+  setTimeout(createAutomaticGroups, 5000);
+};
+
+const restartAutoGroupChecker = () => {
+  if (autoGroupInterval) {
+    clearInterval(autoGroupInterval);
+  }
+  startAutoGroupChecker();
+};
+
+// Automatic Group Creation Logic
+const createAutomaticGroups = async () => {
+  try {
+    console.log('🤖 Running automatic group creation check...');
+    
+    const settings = await AutoGroupSettings.findOne({});
+    if (!settings || !settings.enabled) {
+      console.log('⏸️ Auto-grouping is disabled');
+      return;
+    }
+
+    // Find eligible students without teams
+    const eligibleStudents = await Student.find({
+      status: 'Active',
+      completedCredits: { $gte: settings.minCreditsRequired },
+      teamId: { $exists: false }
+    });
+
+    // Filter out students who already have teams in the Team collection
+    const studentsWithTeams = await Team.find({
+      'members.studentId': { $in: eligibleStudents.map(s => s.studentId) }
+    });
+
+    const studentsInTeams = new Set();
+    studentsWithTeams.forEach(team => {
+      team.members.forEach(member => {
+        studentsInTeams.add(member.studentId);
+      });
+    });
+
+    const availableStudents = eligibleStudents.filter(student => 
+      !studentsInTeams.has(student.studentId)
+    );
+
+    const studentCount = availableStudents.length;
+    console.log(`📊 Found ${studentCount} eligible students for auto-grouping`);
+
+    if (studentCount === 0) {
+      console.log('✅ No students need auto-grouping');
+      return;
+    }
+
+    // Check if automatic creation should happen
+    if (studentCount >= 5) {
+      console.log('👥 5+ students available - manual group creation mode');
+      return;
+    }
+
+    if (studentCount === 1 && !settings.allowSoloGroups) {
+      console.log('👤 1 student available but solo groups disabled');
+      return;
+    }
+
+    // Create automatic groups
+    let groupsCreated = 0;
+
+    if (studentCount >= 2 && studentCount <= 4) {
+      // Create one group with all remaining students
+      const teamName = `Auto-Group-${Date.now()}`;
+      const leader = availableStudents[0];
+
+      const newTeam = new Team({
+        name: teamName,
+        major: leader.program || 'Computer Science',
+        capstone: 'CSE 400',
+        semester: getCurrentSemester(),
+        projectIdea: 'Auto-generated group for CSE 400',
+        description: 'Automatically created group',
+        members: availableStudents.map((student, index) => ({
+          studentId: student.studentId,
+          name: student.name,
+          email: student.email,
+          program: student.program || 'Computer Science',
+          role: index === 0 ? 'Leader' : 'Member',
+          joinedDate: new Date()
+        })),
+        status: 'recruiting',
+        memberCount: availableStudents.length,
+        maxMembers: 4,
+        autoCreated: true,
+        createdDate: new Date()
+      });
+
+      await newTeam.save();
+      
+      // Update students with team reference
+      const studentIds = availableStudents.map(s => s._id);
+      await Student.updateMany(
+        { _id: { $in: studentIds } },
+        { teamId: newTeam._id }
+      );
+
+      groupsCreated++;
+      console.log(`✅ Created automatic group: ${teamName} with ${availableStudents.length} members`);
+
+      // Send notifications to all group members
+      for (const student of availableStudents) {
+        const notification = new Notification({
+          recipientId: student._id,        // ✅ Changed from studentId to recipientId
+          type: 'general',                   // ✅ Changed from 'info' to 'team' 
+          title: 'Automatic Group Created',
+          message: `You have been automatically assigned to team "${teamName}" for CSE 400.`,
+          date: new Date(),
+          read: false
+        });
+        await notification.save();
+      }
+
+    } 
+    else if (studentCount === 1 && settings.allowSoloGroups) {
+      // Create solo group
+      const student = availableStudents[0];
+      const teamName = `Solo-${student.name.replace(/\s+/g, '')}-${Date.now()}`;
+
+      const soloTeam = new Team({
+        name: teamName,
+        major: student.program || 'Computer Science',
+        capstone: 'CSE 400',
+        semester: getCurrentSemester(),
+        projectIdea: 'Solo project for CSE 400',
+        description: 'Automatically created solo group',
+        members: [{
+          studentId: student.studentId,
+          name: student.name,
+          email: student.email,
+          program: student.program || 'Computer Science',
+          role: 'Leader',
+          joinedDate: new Date()
+        }],
+        status: 'active',
+        memberCount: 1,
+        maxMembers: 1,
+        autoCreated: true,
+        soloGroup: true,
+        createdDate: new Date()
+      });
+
+      await soloTeam.save();
+      await Student.findByIdAndUpdate(student._id, { teamId: soloTeam._id });
+
+      groupsCreated++;
+      console.log(`✅ Created solo group: ${teamName} for ${student.name}`);
+
+      // Send notification to the solo student
+      const notification = new Notification({
+        recipientId: student._id,          // ✅ Changed from studentId to recipientId
+        type: 'general',                     // ✅ Changed from 'info' to 'team'
+        title: 'Solo Group Created',
+        message: `You have been automatically assigned to a solo team "${teamName}" for CSE 400.`,
+        date: new Date(),
+        read: false
+      });
+      await notification.save();
+    }
+
+    // Update settings with last check time and total groups created
+    if (groupsCreated > 0) {
+      await AutoGroupSettings.findOneAndUpdate(
+        {},
+        { 
+          lastCheck: new Date(),
+          $inc: { totalAutoGroups: groupsCreated }
+        }
+      );
+      
+      console.log(`🎉 Auto-group creation completed. Created ${groupsCreated} groups.`);
+    } else {
+      await AutoGroupSettings.findOneAndUpdate({}, { lastCheck: new Date() });
+    }
+
+  } catch (error) {
+    console.error('❌ Auto-group creation error:', error);
+  }
+};
+
+
+// ✅ ADD THIS NEW ENDPOINT
+app.get('/api/notifications/my-notifications', authenticate, async (req, res) => {
+  try {
+    const studentId = req.user.id;
+    
+    const notifications = await Notification.find({
+      recipientId: studentId
+    })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .lean();
+    
+    res.json({
+      success: true,
+      notifications
+    });
+    
+  } catch (error) {
+    console.error('Fetch notifications error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ✅ ADD THIS: Mark notification as read
+app.put('/api/notifications/:notificationId/read', authenticate, async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+    const studentId = req.user.id;
+    
+    await Notification.findOneAndUpdate(
+      { 
+        _id: notificationId, 
+        recipientId: studentId 
+      },
+      { read: true }
+    );
+    
+    res.json({ success: true });
+    
+  } catch (error) {
+    console.error('Mark notification read error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
+// ===== END OF AUTOMATIC GROUP CREATION SYSTEM =====
+
+// ✅ OPTIONAL: Add Socket.IO for real-time notifications
+const http = require('http');
+const socketIo = require('socket.io');
+
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: {
+    origin: process.env.REACT_APP_CLIENT_URL || "http://localhost:3000",
+    methods: ["GET", "POST"]
+  }
+});
+
+// Store user socket connections
+const userSockets = new Map();
+
+io.on('connection', (socket) => {
+  socket.on('join', (userId) => {
+    userSockets.set(userId, socket.id);
+    console.log(`User ${userId} connected with socket ${socket.id}`);
+  });
+
+  socket.on('disconnect', () => {
+    for (let [userId, socketId] of userSockets.entries()) {
+      if (socketId === socket.id) {
+        userSockets.delete(userId);
+        console.log(`User ${userId} disconnected`);
+        break;
+      }
+    }
+  });
+});
+
+// Helper function to emit notification
+const emitNotification = (userId, notification) => {
+  const socketId = userSockets.get(userId.toString());
+  if (socketId) {
+    io.to(socketId).emit('notification', notification);
+  }
+};
+
+// Add this endpoint after your existing authentication routes
+app.post('/api/refresh-session', authenticate, async (req, res) => {
+  try {
+    const user = req.user;
+    
+    // Generate a new token with extended expiration
+    const newToken = jwt.sign(
+      { id: user.id, role: user.role }, 
+      JWT_SECRET, 
+      { expiresIn: '1h' } // Extend for another hour
+    );
+    
+    // Optionally update last activity in database
+    if (user.role === 'student') {
+      await Student.findByIdAndUpdate(user.id, {
+        lastActivity: new Date()
+      });
+    } else if (user.role === 'faculty') {
+      await Faculty.findByIdAndUpdate(user.id, {
+        lastActivity: new Date()
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      token: newToken,
+      message: 'Session extended successfully',
+      expiresIn: 3600 // 1 hour in seconds
+    });
+    
+  } catch (error) {
+    console.error('Session refresh error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to extend session' 
+    });
+  }
+});
+
+
+
+
+
 app.use(cors(corsOptions));
 // Initialize configuration and start server
-app.listen(PORT, async () => {
+server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log('Registered routes:');
   console.log('POST /api/teams/send-request');
@@ -2713,7 +3670,10 @@ app.listen(PORT, async () => {
   console.log('POST /api/teams/reject-request');
   console.log('GET /api/teams/all');
   console.log('GET /api/students/available');
+  console.log('GET /api/admin/auto-group-settings'); // ✅ Add this
+  console.log('POST /api/admin/auto-group-settings'); // ✅ Add this
   
   await createAdmin();
   await initializeConfig();
+  startAutoGroupChecker(); // ✅ Add this line
 });
