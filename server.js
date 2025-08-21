@@ -3308,8 +3308,8 @@ app.post('/api/teams/:teamId/handle-join-request', authenticate, async (req, res
       }
       
       joinRequest.status = 'accepted';
-      const acceptedStudent = await Student.findById(joinRequest.studentId);
-      
+      const requestingStudent = await Student.findById(joinRequest.studentId);
+        
       const notification = new Notification({
         recipientId: joinRequest.studentId,
         type: 'team_accepted', // Add this to your enum
@@ -3327,13 +3327,14 @@ app.post('/api/teams/:teamId/handle-join-request', authenticate, async (req, res
       await notification.save();
 // 📧 NEW: Send acceptance email notification
       try {
-        const transporter = require('nodemailer').createTransporter({
-          service: 'gmail',
-          auth: {
-            user: "capstoneserverewu@gmail.com",
-            pass: "ppry snhj xcuc zfdc", // Your Gmail App Password
-          },
-        });
+        const requestingStudent = await Student.findById(joinRequest.studentId);
+       const transporter = require('nodemailer').createTransport({
+      service: 'gmail',
+      auth: {
+        user: "capstoneserverewu@gmail.com",
+        pass: "ppry snhj xcuc zfdc", // Your Gmail App Password
+      },
+    });
 
         const mailOptions = {
           from: '"Supervise Me" <capstoneserverewu@gmail.com>',
