@@ -33,14 +33,20 @@ const upload = multer({
   },
   fileFilter: (req, file, cb) => {
     // Allow specific file types
-    const allowedTypes = [
-      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-      'application/pdf', 'application/msword', 
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'text/plain', 'text/csv'
-    ];
+   const allowedTypes = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'application/pdf', 
+  'application/msword', 
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-powerpoint', 
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/zip',
+  'application/x-zip-compressed',
+  'text/plain', 'text/csv'
+];
+
     
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
@@ -92,6 +98,7 @@ const createNotification = async (recipientId, type, title, message, data = {}) 
   try {
     const notification = new Notification({
       recipientId,
+      recipientType,
       type,
       title,
       message,
@@ -111,9 +118,21 @@ const createNotification = async (recipientId, type, title, message, data = {}) 
 
 
 // Notification Schema
+// Updated Notification Schema to support both students and faculty
 const notificationSchema = new mongoose.Schema({
-  recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-  type: { type: String, enum: [
+  recipientId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    required: true,
+    refPath: 'recipientType'
+  },
+  recipientType: {
+    type: String,
+    required: true,
+    enum: ['Student', 'Faculty']
+  },
+  type: { 
+    type: String, 
+    enum: [
       'team_request', 
       'team_accepted', 
       'team_rejected', 
@@ -121,28 +140,42 @@ const notificationSchema = new mongoose.Schema({
       'support_response', 
       'support_resolved', 
       'support_closed',   
-      'support_update' 
+      'support_update',
+      'supervision_request',
+      'deliverable_submitted',
+      'deliverable_assigned',
+      'team_message',
+      'member_joined',
+      'member_left'
     ], 
-    default: 'general' },
+    default: 'general' 
+  },
   title: { type: String, required: true },
   message: { type: String, required: true },
   data: {
     senderName: String,
     senderStudentId: String,
     teamName: String,
+    teamId: String,
     requestId: String,
     ticketId: String,
     ticketSubject: String,
     ticketStatus: String,
     adminResponse: String,
     category: String,
-    priority: String
+    priority: String,
+    deliverableId: String,
+    deliverableName: String,
+    submissionId: String,
+    facultyId: String,
+    facultyName: String
   },
   read: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });
 
 const Notification = mongoose.model('Notification', notificationSchema);
+
 
 // Notification creation function
 const createTeamRequestNotification = async ({
@@ -187,11 +220,17 @@ const autoGroupSettingsSchema = new mongoose.Schema({
 
 const AutoGroupSettings = mongoose.model('AutoGroupSettings', autoGroupSettingsSchema);
 // Chat Message Schema
+// Modified ChatMessage Schema to support both students and faculty
 const chatMessageSchema = new mongoose.Schema({
   teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
-  senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+  senderId: { type: mongoose.Schema.Types.ObjectId, required: true }, // Can be Student or Faculty
   senderName: { type: String, required: true },
-  senderStudentId: { type: String, required: true },
+  senderIdentifier: { type: String, required: true }, // studentId or facultyEmail
+  senderType: { 
+    type: String, 
+    enum: ['student', 'faculty'], 
+    required: true 
+  }, // NEW: Identify sender type
   message: { type: String, default: '' },
   messageType: {
     type: String,
@@ -209,11 +248,67 @@ const chatMessageSchema = new mongoose.Schema({
   },
   timestamp: { type: Date, default: Date.now },
   editedAt: Date,
-  isEdited: { type: Boolean, default: false }
+  isEdited: { type: Boolean, default: false },
+  readBy: [{
+    facultyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty' },
+    readAt: { type: Date, default: Date.now }
+  }]
 }, { timestamps: true });
 
 
 const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
+
+
+
+
+// Add these schemas after your existing schemas in server.js
+
+// Deliverable Definition Schema
+const deliverableSchema = new mongoose.Schema({
+  teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
+  supervisorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty', required: true },
+  name: { type: String, required: true },
+  description: { type: String },
+  phase: { type: String, enum: ['A', 'B', 'C'], required: true },
+  deadline: { type: Date, required: true },
+  allowedFileTypes: [{ type: String }], // ['pdf', 'docx', 'zip', 'pptx']
+  maxFileSize: { type: Number, default: 20 }, // in MB
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+// Deliverable Submission Schema
+const deliverableSubmissionSchema = new mongoose.Schema({
+  deliverableId: { type: mongoose.Schema.Types.ObjectId, ref: 'Deliverable', required: true },
+  teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
+  submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+  submitterName: { type: String, required: true },
+  fileName: { type: String, required: true },
+  originalName: { type: String, required: true },
+  fileSize: { type: Number, required: true },
+  fileType: { type: String, required: true },
+  cloudinaryId: { type: String, required: true },
+  fileUrl: { type: String, required: true },
+  
+  // Review fields
+  status: { 
+    type: String, 
+    enum: ['pending', 'approved', 'rejected', 'needs_revision'], 
+    default: 'pending' 
+  },
+  feedback: { type: String, default: '' },
+  marks: { type: Number, min: 0, max: 100 },
+  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty' },
+  reviewedAt: { type: Date },
+  
+  submittedAt: { type: Date, default: Date.now },
+  version: { type: Number, default: 1 }, // For resubmissions
+  isLatest: { type: Boolean, default: true }
+});
+
+const Deliverable = mongoose.model('Deliverable', deliverableSchema);
+const DeliverableSubmission = mongoose.model('DeliverableSubmission', deliverableSubmissionSchema);
 
 
 // Annoucement Schema
@@ -227,6 +322,365 @@ const announcementSchema = new mongoose.Schema({
 });
 
 const Announcement = mongoose.model('Announcement', announcementSchema);
+
+const materialSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  description: String,
+  fileName: { type: String, required: true },
+  fileType: { type: String, required: true },
+  fileSize: { type: Number, required: true },
+  fileUrl: { type: String, required: true },
+  downloadUrl: { type: String, required: true },
+  cloudinaryId: { type: String, required: true },
+  
+  // Faculty who uploaded
+  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty', required: true },
+  uploadedByName: { type: String, required: true },
+  
+  // Target audience
+  targetType: { 
+    type: String, 
+    enum: ['all', 'phase', 'teams', 'students'], 
+    required: true 
+  },
+  targetPhase: String,
+  targetTeams: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Team' }],
+  targetStudents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }],
+  
+  // Metadata
+  uploadDate: { type: Date, default: Date.now },
+  isActive: { type: Boolean, default: true },
+  downloadCount: { type: Number, default: 0 }
+}, { timestamps: true });
+
+const Material = mongoose.model('Material', materialSchema);
+console.log('✅ Material model registered:', Material.modelName);
+
+
+
+
+// Custom milestone schema
+const customMilestoneSchema = new mongoose.Schema({
+  teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
+  supervisorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty', required: true },
+  name: { type: String, required: true, maxlength: 100 },
+  description: { type: String, maxlength: 500 },
+  phase: { type: String, enum: ['A', 'B', 'C'], required: true },
+  weight: { type: Number, min: 1, max: 100, required: true },
+  dueDate: { type: Date },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const CustomMilestone = mongoose.model('CustomMilestone', customMilestoneSchema);
+
+// Schema for supervisor-customized predefined milestones
+const customPredefinedMilestoneSchema = new mongoose.Schema({
+  supervisorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty', required: true },
+  phase: { type: String, enum: ['A', 'B', 'C'], required: true },
+  milestoneId: { type: String, required: true }, // original predefined milestone ID
+  name: { type: String, required: true },
+  weight: { type: Number, min: 1, max: 100, required: true },
+  description: { type: String },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const CustomPredefinedMilestone = mongoose.model('CustomPredefinedMilestone', customPredefinedMilestoneSchema);
+
+
+// Board Schema - Add this after your other schemas
+const boardSchema = new mongoose.Schema({
+  name: { 
+    type: String, 
+    required: true, 
+    unique: true 
+  },
+  description: { 
+    type: String, 
+    default: '' 
+  },
+  faculty: [{
+    _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty' },
+    name: { type: String, required: true },
+    email: { type: String, required: true },
+    department: { type: String, required: true },
+    assignedDate: { type: Date, default: Date.now }
+  }],
+  totalTeams: { 
+    type: Number, 
+    default: 0 
+  },
+  isActive: { 
+    type: Boolean, 
+    default: true 
+  },
+  createdAt: { 
+    type: Date, 
+    default: Date.now 
+  },
+  updatedAt: { 
+    type: Date, 
+    default: Date.now 
+  }
+}, { timestamps: true });
+
+const Board = mongoose.model('Board', boardSchema);
+
+// Update the existing boardEvaluationSchema in server.js
+// Update the existing boardEvaluationSchema in server.js
+const boardEvaluationSchema = new mongoose.Schema({
+  boardId: { type: mongoose.Schema.Types.ObjectId, ref: 'Board', required: true },
+  teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
+  phase: { type: String, enum: ['A', 'B', 'C'], required: true },
+  
+  // Individual faculty evaluations
+  evaluations: [{
+    facultyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty', required: true },
+    facultyName: { type: String, required: true },
+    isSupervisor: { type: Boolean, default: false },
+    evaluationType: { 
+      type: String, 
+      enum: ['team', 'individual'], 
+      required: true 
+    },
+    teamMark: { 
+      type: Number, 
+      min: 0, 
+      max: 100,
+      required: function() { return this.evaluationType === 'team'; }
+    },
+    teamFeedback: { type: String },
+    individualMarks: [{
+      studentId: { type: String, required: true },
+      studentName: { type: String, required: true },
+      mark: { type: Number, min: 0, max: 100, required: true },
+      feedback: { type: String }
+    }],
+    submittedAt: { type: Date, default: Date.now },
+    isSubmitted: { type: Boolean, default: false },
+    lastModified: { type: Date, default: Date.now }
+  }],
+  
+  // Faculty calculated results (before admin review)
+  facultyResults: {
+    teamAverage: { type: Number },
+    teamGrade: { type: String },
+    teamGPA: { type: Number },
+    individualResults: [{
+      studentId: { type: String },
+      studentName: { type: String },
+      finalMark: { type: Number },
+      grade: { type: String },
+      gpa: { type: Number },
+      breakdown: {
+        boardAverage: { type: Number },
+        supervisorMark: { type: Number },
+        finalCalculation: { type: String }
+      }
+    }]
+  },
+  
+  // NEW: Admin review fields
+  adminReview: {
+    isReviewed: { type: Boolean, default: false },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    reviewedAt: { type: Date },
+    adminComments: { type: String },
+    
+    // Admin can modify individual grades
+    modifiedGrades: [{
+      studentId: { type: String, required: true },
+      studentName: { type: String, required: true },
+      originalMark: { type: Number, required: true },
+      modifiedMark: { type: Number, required: true },
+      modificationReason: { type: String },
+      modifiedAt: { type: Date, default: Date.now }
+    }],
+    
+    isFinalized: { type: Boolean, default: false },
+    finalizedAt: { type: Date }
+  },
+  
+  // Final results (after admin review/modification)
+  finalResults: {
+    teamAverage: { type: Number },
+    teamGrade: { type: String },
+    teamGPA: { type: Number },
+    individualResults: [{
+      studentId: { type: String },
+      studentName: { type: String },
+      finalMark: { type: Number },
+      grade: { type: String },
+      gpa: { type: Number },
+      isModified: { type: Boolean, default: false },
+      modificationReason: { type: String },
+      breakdown: {
+        boardAverage: { type: Number },
+        supervisorMark: { type: Number },
+        adminAdjustment: { type: Number },
+        finalCalculation: { type: String }
+      }
+    }]
+  },
+  
+  totalEvaluators: { type: Number, default: 0 },
+  submittedEvaluations: { type: Number, default: 0 },
+  isCompleted: { type: Boolean, default: false },
+  completedAt: { type: Date },
+  
+  // NEW: Status tracking
+  status: {
+    type: String,
+    enum: ['in_progress', 'pending_admin_review', 'admin_reviewed', 'finalized'],
+    default: 'in_progress'
+  }
+}, { timestamps: true });
+
+const BoardEvaluation = mongoose.model('BoardEvaluation', boardEvaluationSchema);
+
+
+// Add these functions to server.js
+
+// Updated GRADING_SCALE with your specifications
+const BOARD_GRADING_SCALE = [
+  { min: 80, max: 100, letter: 'A+', gpa: 4.00 },
+  { min: 75, max: 79.99, letter: 'A', gpa: 3.75 },
+  { min: 70, max: 74.99, letter: 'A-', gpa: 3.50 },
+  { min: 65, max: 69.99, letter: 'B+', gpa: 3.25 },
+  { min: 60, max: 64.99, letter: 'B', gpa: 3.00 },
+  { min: 55, max: 59.99, letter: 'B-', gpa: 2.75 },
+  { min: 50, max: 54.99, letter: 'C+', gpa: 2.50 },
+  { min: 45, max: 49.99, letter: 'C', gpa: 2.25 },
+  { min: 40, max: 44.99, letter: 'D', gpa: 2.00 },
+  { min: 0, max: 39.99, letter: 'F', gpa: 0.00 }
+];
+
+// Convert percentage to grade using board grading scale
+const convertToGrade = (percentage) => {
+  if (percentage < 0 || percentage > 100) {
+    return { letter: 'Invalid', gpa: 0.00, valid: false };
+  }
+  
+  const grade = BOARD_GRADING_SCALE.find(scale => 
+    percentage >= scale.min && percentage <= scale.max
+  );
+  
+  return {
+    percentage: parseFloat(percentage).toFixed(2),
+    letter: grade.letter,
+    gpa: grade.gpa,
+    valid: true
+  };
+};
+
+// Calculate final evaluation results
+const calculateFinalEvaluationResults = (boardEvaluation, teamMembers) => {
+  const evaluations = boardEvaluation.evaluations.filter(eval => eval.isSubmitted);
+  
+  if (evaluations.length === 0) {
+    return null;
+  }
+  
+  const supervisorEval = evaluations.find(eval => eval.isSupervisor);
+  const boardEvals = evaluations.filter(eval => !eval.isSupervisor);
+  
+  // Separate team-level and individual evaluations
+  const teamLevelEvals = evaluations.filter(eval => eval.evaluationType === 'team');
+  const individualEvals = evaluations.filter(eval => eval.evaluationType === 'individual');
+  
+  let finalResults = {
+    individualResults: []
+  };
+  
+  // Process each team member
+  teamMembers.forEach(member => {
+    let finalMark = 0;
+    let breakdown = {
+      boardAverage: 0,
+      supervisorMark: 0,
+      finalCalculation: ''
+    };
+    
+    // Collect all marks for this student
+    let studentMarks = [];
+    let boardMarks = [];
+    let supervisorMark = null;
+    
+    evaluations.forEach(evaluation => {
+      if (evaluation.evaluationType === 'team') {
+        // Team-level mark applies to all members
+        const mark = evaluation.teamMark;
+        studentMarks.push(mark);
+        
+        if (evaluation.isSupervisor) {
+          supervisorMark = mark;
+        } else {
+          boardMarks.push(mark);
+        }
+      } else if (evaluation.evaluationType === 'individual') {
+        // Individual mark for this specific student
+        const individualMark = evaluation.individualMarks.find(
+          mark => mark.studentId === member.studentId
+        );
+        
+        if (individualMark) {
+          const mark = individualMark.mark;
+          studentMarks.push(mark);
+          
+          if (evaluation.isSupervisor) {
+            supervisorMark = mark;
+          } else {
+            boardMarks.push(mark);
+          }
+        }
+      }
+    });
+    
+    // Calculate averages
+    const boardAverage = boardMarks.length > 0 ? 
+      boardMarks.reduce((sum, mark) => sum + mark, 0) / boardMarks.length : 0;
+    
+    // Final calculation logic
+    if (supervisorMark !== null && boardMarks.length > 0) {
+      // Mix of board and supervisor marks
+      finalMark = (boardAverage + supervisorMark) / 2;
+      breakdown.finalCalculation = `Average of Board (${boardAverage.toFixed(1)}) and Supervisor (${supervisorMark})`;
+    } else if (studentMarks.length > 0) {
+      // Average all marks
+      finalMark = studentMarks.reduce((sum, mark) => sum + mark, 0) / studentMarks.length;
+      breakdown.finalCalculation = `Average of all ${studentMarks.length} evaluations`;
+    }
+    
+    breakdown.boardAverage = boardAverage;
+    breakdown.supervisorMark = supervisorMark || 0;
+    
+    const gradeInfo = convertToGrade(finalMark);
+    
+    finalResults.individualResults.push({
+      studentId: member.studentId,
+      studentName: member.name,
+      finalMark: parseFloat(finalMark.toFixed(2)),
+      grade: gradeInfo.letter,
+      gpa: gradeInfo.gpa,
+      breakdown: breakdown
+    });
+  });
+  
+  // Calculate team average
+  if (finalResults.individualResults.length > 0) {
+    const teamAverage = finalResults.individualResults.reduce(
+      (sum, result) => sum + result.finalMark, 0
+    ) / finalResults.individualResults.length;
+    
+    const teamGrade = convertToGrade(teamAverage);
+    finalResults.teamAverage = parseFloat(teamAverage.toFixed(2));
+    finalResults.teamGrade = teamGrade.letter;
+    finalResults.teamGPA = teamGrade.gpa;
+  }
+  
+  return finalResults;
+};
 
 
 // Add phase detection function
@@ -659,6 +1113,11 @@ const authenticate = async (req, res, next) => {
     const verified = jwt.verify(token, JWT_SECRET);
     req.user = verified;
 
+    if (req.user.role === 'admin') {
+      // Admin users have full access, no additional checks needed
+      return next();
+    }
+
     if (req.user.role === 'student') {
       const config = await Config.findOne();
       const student = await Student.findById(req.user.id);
@@ -702,8 +1161,11 @@ app.post('/api/admin/login', async (req, res) => {
 
     const validPass = await bcrypt.compare(password, admin.password);
     if (!validPass) return res.status(400).json({ message: 'Invalid credentials' });
-
-    const token = jwt.sign({ id: admin._id }, JWT_SECRET, { expiresIn: '1h' });
+ const token = jwt.sign({ 
+      id: admin._id, 
+      role: 'admin' 
+    }, JWT_SECRET, { expiresIn: '1h' });
+    
     res.json({ token });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
@@ -1708,6 +2170,72 @@ app.get('/api/students/skills', authenticate, async (req, res) => {
   }
 });
 
+// Get materials for students
+app.get('/api/students/materials', authenticate, async (req, res) => {
+  try {
+    console.log('📚 Loading materials for user:', req.user.id, 'role:', req.user.role);
+
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Access denied: Students only' });
+    }
+
+    const student = await Student.findById(req.user.id);
+    if (!student) {
+      console.error('❌ Student not found:', req.user.id);
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    console.log('✅ Student found:', student.name, student.studentId);
+
+    // Get student's team and current phase
+    const team = await Team.findOne({
+      'members.studentId': student.studentId
+    });
+
+    console.log('🔍 Team lookup result:', team ? `Found team: ${team.name}` : 'No team found');
+
+    const currentPhase = team?.currentPhase || team?.phase || 'A';
+    console.log('📊 Current phase:', currentPhase);
+
+    // Build query for materials
+    const query = {
+      isActive: true,
+      $or: [
+        { targetType: 'all' },
+        { targetType: 'phase', targetPhase: currentPhase },
+        { targetType: 'teams', targetTeams: team?._id },
+        { targetType: 'students', targetStudents: req.user.id }
+      ]
+    };
+
+    console.log('🔎 Materials query:', JSON.stringify(query, null, 2));
+
+    // Check if Material model exists
+    console.log('📋 Material model exists:', !!Material);
+
+    const materials = await Material.find(query)
+      .populate('uploadedBy', 'name')
+      .sort({ uploadDate: -1 });
+
+    console.log('📁 Found materials count:', materials.length);
+
+    res.json({
+      success: true,
+      materials,
+      studentPhase: currentPhase,
+      teamName: team?.name || null
+    });
+
+  } catch (error) {
+    console.error('❌ Get student materials error:', error);
+    console.error('❌ Error stack:', error.stack);
+    res.status(500).json({ 
+      message: 'Failed to fetch materials',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
+    });
+  }
+});
+
 
 app.put('/api/students/:id', authenticate, async (req, res) => {
   try {
@@ -1976,6 +2504,26 @@ const teamSchema = new mongoose.Schema({
   maxMembers: { type: Number, default: 4 }, // 4 members maximum
   memberCount: { type: Number, default: 1 },
   
+  completedMilestones: [{ type: String }], // Array of milestone IDs
+  progressStatus: { 
+    type: String, 
+    enum: ['On Track', 'Needs Improvement', 'Delayed', 'Completed', 'Not Set'], 
+    default: 'Not Set' 
+  },
+  statusNotes: { type: String, default: '' },
+  lastProgressUpdate: { type: Date },
+  projectCompleted: { type: Boolean, default: false },
+  projectCompletedDate: { type: Date },
+  specialCase: { 
+    type: Boolean, 
+    default: false,
+    description: 'Team locked by admin when supervisor assigned to incomplete team'
+  },
+  specialCaseReason: {
+    type: String,
+    default: null
+  },
+
   members: [{
     studentId: { type: String, required: true },
     name: { type: String, required: true },
@@ -1993,6 +2541,19 @@ status: {
 
   phase: { type: String, default: 'A' },
   currentPhase: { type: String, default: 'A' },
+  phaseHistory: [{
+    phase: { type: String, enum: ['A', 'B', 'C'] },
+    startDate: { type: Date, default: Date.now },
+    endDate: Date,
+    updatedBy: { 
+      facultyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty' },
+      facultyName: String
+    },
+    duration: Number // in days
+  }],
+  
+  currentPhaseStartDate: { type: Date, default: Date.now },
+  phaseUpdatedAt: { type: Date, default: Date.now },
   
   joinRequests: [{
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
@@ -2550,7 +3111,7 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
               },
               read: false
             });
-            await notification.save();
+            await leaderNotification.save();
           }
         }
 
@@ -2677,7 +3238,12 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
 
       finalTeam = await senderTeam.save();
       console.log(`✅ ${currentStudent.name} joined existing team "${finalTeam.name}" (${finalTeam.members.length}/4 members)`);
+
     }
+
+    
+      let sentPendingRequests = [];
+      let cancelledRequestsCount = 0;
 
     // ✅ NEW: Cancel all pending requests sent BY the accepting student
     try {
@@ -2860,7 +3426,7 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
       memberCount: finalTeam.members.length,
       isTeamFull: finalTeam.members.length >= 4,
       teamStatus: finalTeam.status,
-      cancelledRequests: sentPendingRequests.length // ✅ Include info about canceled requests
+      cancelledRequests: cancelledRequestsCount
     });
 
   } catch (error) {
@@ -2951,7 +3517,8 @@ app.get('/api/teams/all', authenticate, async (req, res) => {
     // Only show teams that are not hidden by supervisors
 const teams = await Team.find({
       status: { $in: ['recruiting', 'active'] },
-      memberCount: { $lt: 4 }, // Add this filter to exclude full teams
+      memberCount: { $lt: 4 },
+      specialCase: { $ne: true }, // Add this filter to exclude full teams
       $or: [
         { supervisor: { $exists: false } },
         { visibleInJoinPage: { $ne: false } }
@@ -3005,6 +3572,117 @@ const studentDetailsMap = new Map(
 });
 
 
+// Add this new endpoint in server.js
+app.get('/api/admin/teams/special-case', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const specialCaseTeams = await Team.find({
+      specialCase: true
+    }).populate('currentSupervisor.facultyId', 'name email department').lean();
+
+    // Add member details
+    const memberStudentIds = [...new Set(
+      specialCaseTeams.flatMap(team => team.members.map(member => member.studentId))
+    )];
+
+    if (memberStudentIds.length > 0) {
+      const studentsWithDetails = await Student.find({
+        studentId: { $in: memberStudentIds }
+      }).select('studentId name email program completedCredits cgpa avatar');
+
+      const studentDetailsMap = new Map(
+        studentsWithDetails.map(student => [student.studentId, student])
+      );
+
+      specialCaseTeams.forEach(team => {
+        team.members.forEach(member => {
+          const studentDetails = studentDetailsMap.get(member.studentId);
+          if (studentDetails) {
+            member.completedCredits = studentDetails.completedCredits;
+            member.cgpa = studentDetails.cgpa;
+            member.avatar = studentDetails.avatar;
+          }
+        });
+      });
+    }
+
+    res.json({
+      success: true,
+      teams: specialCaseTeams,
+      count: specialCaseTeams.length
+    });
+
+  } catch (error) {
+    console.error('Get special case teams error:', error);
+    res.status(500).json({ message: 'Server error while fetching special case teams' });
+  }
+});
+
+// Add endpoint to unlock special case team
+app.post('/api/admin/teams/:teamId/unlock-special-case', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { teamId } = req.params;
+    const team = await Team.findById(teamId);
+
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    if (!team.specialCase) {
+      return res.status(400).json({ message: 'Team is not a special case' });
+    }
+
+    // Unlock the team
+    team.specialCase = false;
+    team.specialCaseReason = null;
+    team.status = team.members.length >= 4 ? 'active' : 'recruiting';
+    
+    await team.save();
+
+    // Notify team members
+    for (const member of team.members) {
+      try {
+        const student = await Student.findOne({ studentId: member.studentId });
+        if (student) {
+          const notification = new Notification({
+            recipientId: student._id,
+            recipientType: 'Student',
+            type: 'general',
+            title: 'Team Unlocked',
+            message: `Administrator has unlocked your team "${team.name}". Your team can now accept new members.`,
+            data: {
+              teamId: team._id,
+              teamName: team.name,
+              action: 'team_unlocked'
+            },
+            read: false
+          });
+          await notification.save();
+        }
+      } catch (notifError) {
+        console.error('Error creating notification:', notifError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Team "${team.name}" has been unlocked from special case status`,
+      team: team
+    });
+
+  } catch (error) {
+    console.error('Unlock special case error:', error);
+    res.status(500).json({ message: 'Server error while unlocking team' });
+  }
+});
+
 
 // Get available students (not in any team) - Updated
 // Replace the existing /api/students/available endpoint with this:
@@ -3039,6 +3717,186 @@ app.get('/api/students/available', authenticate, async (req, res) => {
   } catch (err) {
     console.error('Error fetching available students:', err);
     res.status(500).json({ message: 'Server error while fetching available students' });
+  }
+});
+
+
+app.get('/api/students/deliverables', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Access denied: Students only' });
+    }
+
+    const student = await Student.findById(req.user.id);
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // Find student's team
+    const team = await Team.findOne({
+      'members.studentId': student.studentId,
+      'currentSupervisor.facultyId': { $exists: true }
+    });
+
+    if (!team) {
+      return res.status(404).json({ 
+        message: 'No supervised team found',
+        hasTeam: false,
+        hasSupervisor: false
+      });
+    }
+
+    // Get deliverables for this team
+    const deliverables = await Deliverable.find({
+      teamId: team._id,
+      isActive: true
+    }).sort({ deadline: 1 });
+
+    // Get submissions for each deliverable
+    const deliverablesWithSubmissions = await Promise.all(
+      deliverables.map(async (deliverable) => {
+        const latestSubmission = await DeliverableSubmission.findOne({
+          deliverableId: deliverable._id,
+          teamId: team._id,
+          isLatest: true
+        }).populate('submittedBy', 'name studentId');
+
+        return {
+          ...deliverable.toObject(),
+          submission: latestSubmission,
+          isOverdue: new Date() > deliverable.deadline && !latestSubmission,
+          canUpload: !latestSubmission || latestSubmission.status === 'needs_revision'
+        };
+      })
+    );
+
+    // Check if current user is team leader
+    const teamMember = team.members.find(m => m.studentId === student.studentId);
+    const isLeader = teamMember?.role === 'Leader';
+
+    res.json({
+      success: true,
+      deliverables: deliverablesWithSubmissions,
+      team: {
+        name: team.name,
+        supervisor: team.currentSupervisor.facultyName
+      },
+      isLeader,
+      hasTeam: true,
+      hasSupervisor: true
+    });
+
+  } catch (error) {
+    console.error('Get student deliverables error:', error);
+    res.status(500).json({ message: 'Server error while fetching deliverables' });
+  }
+});
+
+// NEW: Get finalized grades for student
+app.get('/api/students/finalized-grades', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Access denied: Students only' });
+    }
+
+    const student = await Student.findById(req.user.id);
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // Find all finalized evaluations for this student
+    const finalizedEvaluations = await BoardEvaluation.find({
+      status: 'finalized',
+      'finalResults.individualResults.studentId': student.studentId
+    })
+    .populate('boardId', 'name')
+    .populate('teamId', 'name')
+    .sort({ 'adminReview.finalizedAt': -1 });
+
+    const grades = finalizedEvaluations.map(evaluation => {
+      const studentResult = evaluation.finalResults.individualResults.find(
+        result => result.studentId === student.studentId
+      );
+
+      if (!studentResult) return null;
+
+      return {
+        phase: evaluation.phase,
+        teamId: evaluation.teamId._id,
+        teamName: evaluation.teamId.name,
+        boardName: evaluation.boardId.name,
+        finalMark: studentResult.finalMark,
+        grade: studentResult.grade,
+        gpa: studentResult.gpa,
+        isModified: studentResult.isModified || false,
+        modificationReason: studentResult.modificationReason,
+        breakdown: studentResult.breakdown,
+        finalizedAt: evaluation.adminReview.finalizedAt
+      };
+    }).filter(grade => grade !== null);
+
+    res.json({
+      success: true,
+      grades: grades
+    });
+
+  } catch (error) {
+    console.error('Get finalized grades error:', error);
+    res.status(500).json({ message: 'Server error while fetching grades' });
+  }
+});
+
+// Get student's finalized grades (my-grades endpoint)
+app.get('/api/students/my-grades', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Access denied: Students only' });
+    }
+
+    const student = await Student.findById(req.user.id);
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // Find all finalized evaluations for this student
+    const finalizedEvaluations = await BoardEvaluation.find({
+      status: 'finalized',
+      'finalResults.individualResults.studentId': student.studentId
+    })
+    .populate('boardId', 'name')
+    .populate('teamId', 'name')
+    .sort({ 'adminReview.finalizedAt': -1 });
+
+    const grades = finalizedEvaluations.map(evaluation => {
+      const studentResult = evaluation.finalResults.individualResults.find(
+        result => result.studentId === student.studentId
+      );
+
+      if (!studentResult) return null;
+
+      return {
+        phase: evaluation.phase,
+        teamId: evaluation.teamId._id,
+        teamName: evaluation.teamId.name,
+        boardName: evaluation.boardId.name,
+        finalMark: studentResult.finalMark,
+        grade: studentResult.grade,
+        gpa: studentResult.gpa,
+        isModified: studentResult.isModified || false,
+        modificationReason: studentResult.modificationReason,
+        breakdown: studentResult.breakdown,
+        finalizedAt: evaluation.adminReview.finalizedAt
+      };
+    }).filter(grade => grade !== null);
+
+    res.json({
+      success: true,
+      grades: grades
+    });
+
+  } catch (error) {
+    console.error('Get student grades error:', error);
+    res.status(500).json({ message: 'Server error while fetching grades' });
   }
 });
 
@@ -3112,6 +3970,14 @@ app.post('/api/teams/:teamId/join-request', authenticate, async (req, res) => {
     const team = await Team.findById(teamId);
     if (!team) {
       return res.status(404).json({ message: 'Team not found' });
+    }
+
+    if (team.specialCase) {
+      return res.status(403).json({ 
+        message: `This team is locked as a special case by administration. Only admins can manage membership.`,
+        action: 'special_case_blocked',
+        specialCase: true
+      });
     }
 
    const student = await Student.findById(req.user.id).select('name studentId email program completedCredits avatar skills'); // ✅ ADD skills
@@ -3235,6 +4101,283 @@ app.post('/api/teams/:teamId/join-request', authenticate, async (req, res) => {
 
   } catch (error) {
     console.error('Join request error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Admin endpoint to mark team as special case
+app.put('/api/admin/teams/:teamId/special-case', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
+    const { teamId } = req.params;
+    const { specialCase, reason } = req.body;
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Update special case status
+    team.specialCase = specialCase;
+    team.specialCaseReason = specialCase ? reason : null;
+    
+    if (specialCase) {
+      team.status = 'active'; // When marked as special case, set to active
+    } else {
+      team.status = 'recruiting'; // When unmarked, set to recruiting
+    }
+
+    await team.save();
+
+    // Notify team members about special case status change
+    const teamMemberStudents = await Student.find({
+      studentId: { $in: team.members.map(m => m.studentId) }
+    });
+
+    for (const student of teamMemberStudents) {
+      const notification = new Notification({
+        recipientId: student._id,
+        recipientType: 'Student',
+        type: 'general',
+        title: specialCase ? 'Team Marked as Special Case' : 'Special Case Status Removed',
+        message: specialCase 
+          ? `Your team "${team.name}" has been marked as a special case by admin. ${reason ? `Reason: ${reason}` : ''}`
+          : `Your team "${team.name}" is no longer marked as a special case.`,
+        data: {
+          teamId: team._id,
+          teamName: team.name,
+          specialCase: specialCase,
+          reason: reason,
+          status: team.status,
+          action: 'special_case_update'
+        },
+        read: false
+      });
+      await notification.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Team ${specialCase ? 'marked as' : 'unmarked from'} special case successfully`,
+      team: {
+        id: team._id,
+        name: team.name,
+        specialCase: team.specialCase,
+        specialCaseReason: team.specialCaseReason,
+        status: team.status,
+      }
+    });
+
+  } catch (error) {
+    console.error('Special case update error:', error);
+    res.status(500).json({ message: 'Server error while updating special case status' });
+  }
+});
+
+// Add endpoint to unlock special case team
+app.post('/api/admin/teams/:teamId/unlock-special-case', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { teamId } = req.params;
+    const team = await Team.findById(teamId);
+
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    if (!team.specialCase) {
+      return res.status(400).json({ message: 'Team is not a special case' });
+    }
+
+    // Unlock the team
+    team.specialCase = false;
+    team.specialCaseReason = null;
+    team.status = 'recruiting'; // ✅ CHANGED: Always set to recruiting when unlocked
+    
+    await team.save();
+
+    // Notify team members
+    for (const member of team.members) {
+      try {
+        const student = await Student.findOne({ studentId: member.studentId });
+        if (student) {
+          const notification = new Notification({
+            recipientId: student._id,
+            recipientType: 'Student',
+            type: 'general',
+            title: 'Team Unlocked',
+            message: `Administrator has unlocked your team "${team.name}". Your team is now recruiting and can accept new members.`,
+            data: {
+              teamId: team._id,
+              teamName: team.name,
+              action: 'team_unlocked',
+              status: 'recruiting' // ✅ Include new status
+            },
+            read: false
+          });
+          await notification.save();
+        }
+      } catch (notifError) {
+        console.error('Error creating notification:', notifError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Team "${team.name}" has been unlocked from special case status and is now recruiting`,
+      team: team
+    });
+
+  } catch (error) {
+    console.error('Unlock special case error:', error);
+    res.status(500).json({ message: 'Server error while unlocking team' });
+  }
+});
+
+
+// Modified faculty supervised teams endpoint to only show special-case teams
+app.get('/api/faculty/supervised-teams', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Only show special-case teams for faculty
+    const supervisedTeams = await Team.find({
+      supervisor: req.user.id,
+      'currentSupervisor.facultyId': req.user.id
+      //  specialCase: true // ✅ NEW: Only show special-case teams
+    }).lean();
+
+    // Get detailed student information for each team
+    const teamsWithDetails = await Promise.all(
+      supervisedTeams.map(async (team) => {
+        const memberStudentIds = team.members.map(member => member.studentId);
+        const studentsWithDetails = await Student.find({
+          studentId: { $in: memberStudentIds }
+        }).select('studentId name email program completedCredits cgpa avatar phone');
+
+        const studentDetailsMap = new Map(
+          studentsWithDetails.map(student => [student.studentId, student])
+        );
+
+        const enhancedMembers = team.members.map(member => {
+          const studentDetails = studentDetailsMap.get(member.studentId);
+          return {
+            ...member,
+            email: studentDetails?.email || 'Not available',
+            program: studentDetails?.program || 'Not specified',
+            completedCredits: studentDetails?.completedCredits || 0,
+            cgpa: studentDetails?.cgpa || 0.0,
+            avatar: studentDetails?.avatar || null,
+            phone: studentDetails?.phone || 'Not available'
+          };
+        });
+
+        const validCGPAs = enhancedMembers.filter(m => m.cgpa > 0).map(m => m.cgpa);
+        const averageCGPA = validCGPAs.length > 0 ? 
+          validCGPAs.reduce((sum, cgpa) => sum + cgpa, 0) / validCGPAs.length : 0;
+
+          
+           const recentMessageCount = await ChatMessage.countDocuments({
+          teamId: team._id,
+          senderType: 'student',
+          timestamp: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+        });
+
+
+        // Get latest message
+        const latestMessage = await ChatMessage.findOne({ teamId: team._id })
+          .sort({ timestamp: -1 })
+          .lean();
+
+        return {
+          ...team,
+          members: enhancedMembers,
+          averageCGPA: averageCGPA.toFixed(2),
+          totalCompletedCredits: enhancedMembers.reduce((sum, member) => sum + (member.completedCredits || 0), 0),
+          isVisible: team.status !== 'hidden',
+          canReceiveRequests: team.status === 'recruiting' || team.status === 'active',
+          isSpecialCase: team.specialCase || false,
+          recentMessageCount: recentMessageCount, // ✅ CHANGED
+          hasRecentMessages: recentMessageCount > 0, // ✅ CHANGED
+          latestMessage: latestMessage ? {
+            text: latestMessage.message || 'File shared',
+            senderName: latestMessage.senderName,
+            timestamp: latestMessage.timestamp,
+            senderType: latestMessage.senderType
+          } : null
+        };
+      })
+    );
+
+const teamsWithRecentMessages = teamsWithDetails.filter(team => team.hasRecentMessages).length;
+
+    res.json({
+      success: true,
+      teams: teamsWithDetails,
+      totalTeams: teamsWithDetails.length,
+      message: teamsWithDetails.length === 0 ? 'No special-case teams assigned to you' : undefined,
+teamsWithRecentMessages: teamsWithRecentMessages 
+    });
+
+  } catch (error) {
+    console.error('Get supervised teams error:', error);
+    res.status(500).json({ message: 'Server error while fetching supervised teams' });
+  }
+});
+
+
+// NEW: Add endpoint to mark team messages as read
+app.post('/api/faculty/teams/:teamId/mark-read', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Verify faculty is the supervisor
+    if (!team.currentSupervisor || team.currentSupervisor.facultyId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'You are not the supervisor of this team' });
+    }
+
+    // Mark all unread student messages as read by this faculty
+    const result = await ChatMessage.updateMany(
+      {
+        teamId: teamId,
+        senderType: 'student',
+        'readBy.facultyId': { $ne: req.user.id }
+      },
+      {
+        $push: {
+          readBy: {
+            facultyId: req.user.id,
+            readAt: new Date()
+          }
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: 'Messages marked as read',
+      markedCount: result.modifiedCount
+    });
+
+  } catch (error) {
+    console.error('Mark messages as read error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -3647,32 +4790,34 @@ app.get('/api/teams/team-requests', authenticate, async (req, res) => {
     .sort({ sentDate: -1 });
 
     // Format requests with additional info
-    const formattedRequests = teamRequests.map(request => ({
-      _id: request._id,
-      targetStudent: {
-        _id: request.targetStudentId._id,
-        name: request.targetStudentName,
-        studentId: request.targetStudentId.studentId,
-        email: request.targetStudentId.email,
-        program: request.targetStudentId.program
-      },
-      senderInfo: {
-        _id: request.senderId._id,
-        name: request.senderName,
-        studentId: request.senderId.studentId
-      },
-      status: request.status,
-      requiresLeaderApproval: request.requiresLeaderApproval,
-      leaderApprovalStatus: request.leaderApprovalStatus,
-      sentDate: request.sentDate,
-      responseDate: request.responseDate,
-      leaderResponseDate: request.leaderResponseDate,
-      message: request.message
-    }));
+   const validRequests = teamRequests
+      .filter(request => request.targetStudentId && request.senderId) // Filter out null references
+      .map(request => ({
+        _id: request._id,
+        targetStudent: {
+          _id: request.targetStudentId._id,
+          name: request.targetStudentName || request.targetStudentId.name,
+          studentId: request.targetStudentId.studentId,
+          email: request.targetStudentId.email,
+          program: request.targetStudentId.program
+        },
+        senderInfo: {
+          _id: request.senderId._id,
+          name: request.senderName || request.senderId.name,
+          studentId: request.senderId.studentId
+        },
+        status: request.status,
+        requiresLeaderApproval: request.requiresLeaderApproval,
+        leaderApprovalStatus: request.leaderApprovalStatus,
+        sentDate: request.sentDate,
+        responseDate: request.responseDate,
+        leaderResponseDate: request.leaderResponseDate,
+        message: request.message
+      }));
 
     res.json({
       success: true,
-      requests: formattedRequests,
+      requests: validRequests,
       team: {
         id: team._id,
         name: team.name,
@@ -3884,6 +5029,7 @@ app.post('/api/faculty/teams/:teamId/remove-member', authenticate, async (req, r
       // Notify the removed student
       const notification = new Notification({
         recipientId: student._id,
+        recipientType: 'Student',
         type: 'general',
         title: 'Team Dissolved',
         message: `You were removed from team "${team.name}" by supervisor. The team has been dissolved as no members remain.`,
@@ -3939,6 +5085,7 @@ app.post('/api/faculty/teams/:teamId/remove-member', authenticate, async (req, r
     // Notify removed student
     const removedNotification = new Notification({
       recipientId: student._id,
+      recipientType: 'Student',
       type: 'general',
       title: 'Removed from Team by Supervisor',
       message: `You have been removed from team "${team.name}" by your supervisor ${faculty.name}.${reason ? ` Reason: ${reason}` : ''}`,
@@ -4240,7 +5387,6 @@ app.get('/api/teams/:teamId/phase', authenticate, async (req, res) => {
   }
 });
 
-// ✅ ADD THIS ENDPOINT to server.js
 app.put('/api/faculty/teams/:teamId/phase', authenticate, async (req, res) => {
   try {
     const { teamId } = req.params;
@@ -4264,19 +5410,63 @@ app.put('/api/faculty/teams/:teamId/phase', authenticate, async (req, res) => {
       return res.status(403).json({ message: 'You are not the supervisor of this team' });
     }
 
-const previousPhase = team.currentPhase || team.phase;
-    team.currentPhase = phase;
-    team.phase = phase; // For backward compatibility
-    team.phaseUpdatedAt = new Date();
+    const faculty = await Faculty.findById(req.user.id);
+    const previousPhase = team.currentPhase || team.phase || 'A';
+    const now = new Date();
+    
+    // Calculate duration of previous phase
+    const previousPhaseStartDate = team.currentPhaseStartDate || team.createdDate || new Date();
+    const previousPhaseDuration = Math.floor((now - previousPhaseStartDate) / (1000 * 60 * 60 * 24));
 
+    // Update phase history - close previous phase
+    if (!team.phaseHistory) {
+      team.phaseHistory = [];
+    }
+
+    // Close the current phase in history
+    const currentPhaseInHistory = team.phaseHistory.find(p => p.phase === previousPhase && !p.endDate);
+    if (currentPhaseInHistory) {
+      currentPhaseInHistory.endDate = now;
+      currentPhaseInHistory.duration = previousPhaseDuration;
+    } else {
+      // Add the previous phase to history if it doesn't exist
+      team.phaseHistory.push({
+        phase: previousPhase,
+        startDate: previousPhaseStartDate,
+        endDate: now, // ✅ IMPORTANT: Set end date for previous phase
+        duration: previousPhaseDuration,
+        updatedBy: {
+          facultyId: faculty._id,
+          facultyName: faculty.name
+        }
+      });
+    }
+
+
+    // Add new phase to history
+    team.phaseHistory.push({
+      phase: phase,
+      startDate: now,
+      updatedBy: {
+        facultyId: faculty._id,
+        facultyName: faculty.name
+      }
+    });
+
+    // Update current phase info
+    team.currentPhase = phase;
+    team.phase = phase;
+    team.currentPhaseStartDate = now;
+    team.phaseUpdatedAt = now;
+
+      team.completedMilestones = [];
     await team.save();
 
-    // Notify team members about phase change
+    // Create notifications for team members
     const teamMemberStudents = await Student.find({
       studentId: { $in: team.members.map(m => m.studentId) }
     });
 
-    const faculty = await Faculty.findById(req.user.id);
     const phaseDescriptions = {
       "A": "Research & Planning Phase",
       "B": "Development & Implementation Phase", 
@@ -4286,15 +5476,17 @@ const previousPhase = team.currentPhase || team.phase;
     for (const student of teamMemberStudents) {
       const notification = new Notification({
         recipientId: student._id,
+        recipientType: 'Student',
         type: 'general',
         title: 'Team Phase Updated',
-        message: `Your supervisor ${faculty.name} has moved your team "${team.name}" to ${phaseDescriptions[phase]}.`,
+        message: `Your supervisor ${faculty.name} has moved your team "${team.name}" from Phase ${previousPhase} to Phase ${phase} (${phaseDescriptions[phase]}).`,
         data: {
           teamId: team._id,
           teamName: team.name,
           supervisorName: faculty.name,
           previousPhase: previousPhase,
           newPhase: phase,
+          phaseStartDate: now,
           action: 'phase_update'
         },
         read: false
@@ -4309,7 +5501,9 @@ const previousPhase = team.currentPhase || team.phase;
         id: team._id,
         name: team.name,
         previousPhase: previousPhase,
-        newPhase: phase
+        newPhase: phase,
+        phaseStartDate: now,
+        phaseDuration: previousPhaseDuration
       }
     });
 
@@ -4318,6 +5512,7 @@ const previousPhase = team.currentPhase || team.phase;
     res.status(500).json({ message: 'Server error while updating team phase' });
   }
 });
+
 
 // Helper function for phase descriptions
 const getPhaseDescription = (phase) => {
@@ -4437,12 +5632,12 @@ app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
 });
 
 
+// Replace around line 2800-2900
 app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
   try {
     const cacheKey = `requests_${req.user.id}`;
     const cached = requestCache.get(cacheKey);
     
-    // Return cached data if less than 1 second old
     if (cached && (Date.now() - cached.timestamp) < 1000) {
       return res.json(cached.data);
     }
@@ -4450,15 +5645,21 @@ app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
     const requests = await TeamRequest.find({
       targetStudentId: req.user.id,
       status: 'pending'
-    }).sort({ sentDate: -1 });
+    })
+    .populate('senderId', 'name studentId email')
+    .sort({ sentDate: -1 });
 
-    // Cache the result
+    // ✅ FIX: Filter out requests with null sender
+    const validRequests = requests.filter(request => 
+      request.senderId && request.senderId._id
+    );
+
     requestCache.set(cacheKey, {
-      data: requests,
+      data: validRequests,
       timestamp: Date.now()
     });
     
-    res.json(requests);
+    res.json(validRequests);
   } catch (error) {
     console.error('Get incoming requests error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -4466,32 +5667,62 @@ app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
 });
 
 
+
 // Send a chat message
 // Send a chat message with file support
+// Updated: Send a chat message (supports both students and faculty)
 app.post('/api/teams/:teamId/messages', authenticate, async (req, res) => {
   try {
     const { teamId } = req.params;
     const { message, messageType = 'text', file } = req.body;
 
-    // Verify team exists and user is a member
     const team = await Team.findById(teamId);
     if (!team) {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    const student = await Student.findById(req.user.id);
-    const isMember = team.members.some(member => member.studentId === student.studentId);
-    
-    if (!isMember) {
-      return res.status(403).json({ message: 'You are not a member of this team' });
+    let isAuthorized = false;
+    let senderData = {};
+
+    if (req.user.role === 'student') {
+      // Check if student is a team member
+      const student = await Student.findById(req.user.id);
+      const isMember = team.members.some(member => member.studentId === student.studentId);
+      
+      if (isMember) {
+        isAuthorized = true;
+        senderData = {
+          senderId: req.user.id,
+          senderName: student.name,
+          senderIdentifier: student.studentId,
+          senderType: 'student'
+        };
+      }
+    } else if (req.user.role === 'faculty') {
+      // Check if faculty is the team supervisor
+      const faculty = await Faculty.findById(req.user.id);
+      const isSupervisor = team.currentSupervisor && 
+                          team.currentSupervisor.facultyId.toString() === req.user.id;
+      
+      if (isSupervisor) {
+        isAuthorized = true;
+        senderData = {
+          senderId: req.user.id,
+          senderName: faculty.name,
+          senderIdentifier: faculty.email,
+          senderType: 'faculty'
+        };
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({ message: 'You are not authorized to chat in this team' });
     }
 
     // Create new message
     const chatMessage = new ChatMessage({
       teamId,
-      senderId: req.user.id,
-      senderName: student.name,
-      senderStudentId: student.studentId,
+      ...senderData,
       message: message || '',
       messageType: messageType || 'text',
       file: file || null
@@ -4500,8 +5731,7 @@ app.post('/api/teams/:teamId/messages', authenticate, async (req, res) => {
     await chatMessage.save();
 
     // Populate sender info for response
-    const populatedMessage = await ChatMessage.findById(chatMessage._id)
-      .populate('senderId', 'name studentId avatar');
+    const populatedMessage = await ChatMessage.findById(chatMessage._id);
 
     res.status(201).json({
       success: true,
@@ -4514,35 +5744,59 @@ app.post('/api/teams/:teamId/messages', authenticate, async (req, res) => {
   }
 });
 
-
-// Get chat messages for a team
+// Updated: Get chat messages (supports both students and faculty)
 app.get('/api/teams/:teamId/messages', authenticate, async (req, res) => {
   try {
     const { teamId } = req.params;
     const { page = 1, limit = 50 } = req.query;
 
-    // Verify team exists and user is a member
     const team = await Team.findById(teamId);
     if (!team) {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    const student = await Student.findById(req.user.id);
-    const isMember = team.members.some(member => member.studentId === student.studentId);
-    
-    if (!isMember) {
-      return res.status(403).json({ message: 'You are not a member of this team' });
+    let isAuthorized = false;
+
+    if (req.user.role === 'student') {
+      const student = await Student.findById(req.user.id);
+      const isMember = team.members.some(member => member.studentId === student.studentId);
+      isAuthorized = isMember;
+    } else if (req.user.role === 'faculty') {
+      const isSupervisor = team.currentSupervisor && 
+                          team.currentSupervisor.facultyId.toString() === req.user.id;
+      isAuthorized = isSupervisor;
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({ message: 'You are not authorized to view this chat' });
     }
 
     // Get messages with pagination
     const messages = await ChatMessage.find({ teamId })
-      .populate('senderId', 'name studentId avatar')
       .sort({ timestamp: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
 
     // Reverse to show oldest first
     const sortedMessages = messages.reverse();
+
+    if (req.user.role === 'faculty') {
+      await ChatMessage.updateMany(
+        {
+          teamId: teamId,
+          senderType: 'student',
+          'readBy.facultyId': { $ne: req.user.id }
+        },
+        {
+          $push: {
+            readBy: {
+              facultyId: req.user.id,
+              readAt: new Date()
+            }
+          }
+        }
+      );
+    }
 
     res.json({
       success: true,
@@ -4559,6 +5813,7 @@ app.get('/api/teams/:teamId/messages', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 
 // Delete a message (only sender can delete)
 app.delete('/api/teams/:teamId/messages/:messageId', authenticate, async (req, res) => {
@@ -4617,6 +5872,109 @@ app.put('/api/teams/:teamId/messages/:messageId', authenticate, async (req, res)
   }
 });
 
+// Get teams supervised by faculty (for chat access)
+app.get('/api/faculty/my-supervised-teams', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const supervisedTeams = await Team.find({
+      'currentSupervisor.facultyId': req.user.id
+    }).lean();
+
+    // Add member count and latest message info
+    const teamsWithDetails = await Promise.all(
+      supervisedTeams.map(async (team) => {
+        // Get latest message for each team
+        const latestMessage = await ChatMessage.findOne({ teamId: team._id })
+          .sort({ timestamp: -1 })
+          .lean();
+
+        // Get unread message count for faculty
+        const unreadCount = await ChatMessage.countDocuments({
+          teamId: team._id,
+          timestamp: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // Last 24 hours as example
+          senderType: 'student' // Only count student messages as unread for faculty
+        });
+
+        return {
+          ...team,
+          memberCount: team.members?.length || 0,
+          latestMessage: latestMessage ? {
+            text: latestMessage.message || 'File shared',
+            senderName: latestMessage.senderName,
+            timestamp: latestMessage.timestamp,
+            senderType: latestMessage.senderType
+          } : null,
+          unreadCount
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      teams: teamsWithDetails
+    });
+
+  } catch (error) {
+    console.error('Get supervised teams error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Faculty endpoint to get team details for chat
+app.get('/api/faculty/team-chat/:teamId', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Verify faculty is the supervisor
+    if (!team.currentSupervisor || team.currentSupervisor.facultyId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'You are not the supervisor of this team' });
+    }
+
+    // Get student details for team members
+    const memberStudentIds = team.members.map(member => member.studentId);
+    const studentsWithDetails = await Student.find({
+      studentId: { $in: memberStudentIds }
+    }).select('studentId name email program avatar');
+
+    const studentDetailsMap = new Map(
+      studentsWithDetails.map(student => [student.studentId, student])
+    );
+
+    const enhancedMembers = team.members.map(member => {
+      const studentDetails = studentDetailsMap.get(member.studentId);
+      return {
+        ...member,
+        email: studentDetails?.email || 'Not available',
+        program: studentDetails?.program || 'Not specified',
+        avatar: studentDetails?.avatar || null
+      };
+    });
+
+    res.json({
+      success: true,
+      team: {
+        ...team.toObject(),
+        members: enhancedMembers
+      }
+    });
+
+  } catch (error) {
+    console.error('Get team chat error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 // Add to server.js - Call logging endpoint
 app.post('/api/teams/:teamId/call-log', authenticate, async (req, res) => {
@@ -5066,7 +6424,8 @@ const createAutomaticGroups = async () => {
       // Send notifications to all group members
       for (const student of availableStudents) {
         const notification = new Notification({
-          recipientId: student._id,        // ✅ Changed from studentId to recipientId
+          recipientId: student._id,  
+          recipientType: 'Student',      // ✅ Changed from studentId to recipientId
           type: 'general',                   // ✅ Changed from 'info' to 'team' 
           title: 'Automatic Group Created',
           message: `You have been automatically assigned to team "${teamName}" for CSE 400.`,
@@ -5113,7 +6472,8 @@ const createAutomaticGroups = async () => {
 
       // Send notification to the solo student
       const notification = new Notification({
-        recipientId: student._id,          // ✅ Changed from studentId to recipientId
+        recipientId: student._id,  
+        recipientType: 'Student',        // ✅ Changed from studentId to recipientId
         type: 'general',                     // ✅ Changed from 'info' to 'team'
         title: 'Solo Group Created',
         message: `You have been automatically assigned to a solo team "${teamName}" for CSE 400.`,
@@ -5235,6 +6595,7 @@ app.post('/api/admin/teams/:teamId/add-member', authenticate, async (req, res) =
 
  const notification = new Notification({
       recipientId: student._id,
+      recipientType: 'Student',
       type: 'general',
       title: isEligible ? 'Added to Team by Admin' : 'Added to Team by Admin (Special Access)',
       message: isEligible 
@@ -5501,7 +6862,8 @@ app.delete('/api/admin/teams/:teamId/remove-member/:studentId', authenticate, as
 
     // Create notification for removed student
     const notification = new Notification({
-      recipientId: student._id,  // ✅ Use student._id for notification
+      recipientId: student._id, 
+      recipientType: 'Student', // ✅ Use student._id for notification
       type: 'general',
       title: 'Removed from Team by Admin',
       message: `You have been removed from team "${team.name}" by an administrator.`,
@@ -5692,141 +7054,141 @@ app.post('/api/refresh-session', authenticate, async (req, res) => {
 
 // Add this endpoint in your server.js
 // Replace your existing /api/supervision/request endpoint with this enhanced version
-app.post('/api/supervision/request', authenticate, async (req, res) => {
-  try {
-    const { facultyId, message } = req.body;
+// app.post('/api/supervision/request', authenticate, async (req, res) => {
+//   try {
+//     const { facultyId, message } = req.body;
     
-    if (!facultyId || !message) {
-      return res.status(400).json({ message: 'Faculty ID and message are required' });
-    }
+//     if (!facultyId || !message) {
+//       return res.status(400).json({ message: 'Faculty ID and message are required' });
+//     }
 
-    const student = await Student.findById(req.user.id);
-    if (!student) {
-      return res.status(404).json({ message: 'Student not found' });
-    }
+//     const student = await Student.findById(req.user.id);
+//     if (!student) {
+//       return res.status(404).json({ message: 'Student not found' });
+//     }
 
-    // Check if student is in a team
-    const team = await Team.findOne({
-      'members.studentId': student.studentId
-    });
+//     // Check if student is in a team
+//     const team = await Team.findOne({
+//       'members.studentId': student.studentId
+//     });
 
-    if (!team) {
-      return res.status(403).json({ message: 'You must be in a team to request supervision' });
-    }
+//     if (!team) {
+//       return res.status(403).json({ message: 'You must be in a team to request supervision' });
+//     }
 
-    // Check if user is team leader
-    const teamMember = team.members.find(member => member.studentId === student.studentId);
-    if (!teamMember || teamMember.role !== 'Leader') {
-      return res.status(403).json({ message: 'Only team leaders can send supervision requests' });
-    }
+//     // Check if user is team leader
+//     const teamMember = team.members.find(member => member.studentId === student.studentId);
+//     if (!teamMember || teamMember.role !== 'Leader') {
+//       return res.status(403).json({ message: 'Only team leaders can send supervision requests' });
+//     }
 
-    // Check if faculty exists and is visible to students
-    const faculty = await Faculty.findById(facultyId);
-    if (!faculty) {
-      return res.status(404).json({ message: 'Faculty not found' });
-    }
+//     // Check if faculty exists and is visible to students
+//     const faculty = await Faculty.findById(facultyId);
+//     if (!faculty) {
+//       return res.status(404).json({ message: 'Faculty not found' });
+//     }
 
-    if (!faculty.visibleToStudents) {
-      return res.status(403).json({ message: 'This faculty is not available for supervision requests' });
-    }
+//     if (!faculty.visibleToStudents) {
+//       return res.status(403).json({ message: 'This faculty is not available for supervision requests' });
+//     }
 
-    // Check if already sent request to this faculty
-    const existingRequest = team.supervisionRequests?.find(
-      req => req.facultyId.toString() === facultyId && req.status === 'pending'
-    );
+//     // Check if already sent request to this faculty
+//     const existingRequest = team.supervisionRequests?.find(
+//       req => req.facultyId.toString() === facultyId && req.status === 'pending'
+//     );
 
-    if (existingRequest) {
-      return res.status(400).json({ 
-        message: `Your team has already sent a supervision request to ${faculty.name}`,
-        action: 'duplicate_request'
-      });
-    }
+//     if (existingRequest) {
+//       return res.status(400).json({ 
+//         message: `Your team has already sent a supervision request to ${faculty.name}`,
+//         action: 'duplicate_request'
+//       });
+//     }
 
-    // Check if team already has an accepted supervisor
-    if (team.currentSupervisor && team.currentSupervisor.facultyId) {
-      return res.status(400).json({
-        message: `Your team already has a supervisor: ${team.currentSupervisor.facultyName}`,
-        action: 'already_supervised'
-      });
-    }
+//     // Check if team already has an accepted supervisor
+//     if (team.currentSupervisor && team.currentSupervisor.facultyId) {
+//       return res.status(400).json({
+//         message: `Your team already has a supervisor: ${team.currentSupervisor.facultyName}`,
+//         action: 'already_supervised'
+//       });
+//     }
 
-    // Initialize supervisionRequests array if it doesn't exist
-    if (!team.supervisionRequests) {
-      team.supervisionRequests = [];
-    }
+//     // Initialize supervisionRequests array if it doesn't exist
+//     if (!team.supervisionRequests) {
+//       team.supervisionRequests = [];
+//     }
 
-    // Add supervision request to team
-    const supervisionRequest = {
-      facultyId: faculty._id,
-      facultyName: faculty.name,
-      facultyDepartment: faculty.department,
-      facultyEmail: faculty.email,
-      requestedBy: student._id,
-      requestedByName: student.name,
-      status: 'pending',
-      requestDate: new Date(),
-      message: message
-    };
+//     // Add supervision request to team
+//     const supervisionRequest = {
+//       facultyId: faculty._id,
+//       facultyName: faculty.name,
+//       facultyDepartment: faculty.department,
+//       facultyEmail: faculty.email,
+//       requestedBy: student._id,
+//       requestedByName: student.name,
+//       status: 'pending',
+//       requestDate: new Date(),
+//       message: message
+//     };
 
-    team.supervisionRequests.push(supervisionRequest);
+//     team.supervisionRequests.push(supervisionRequest);
     
-    // ✅ IMPORTANT: Mark the field as modified for proper saving
-    team.markModified('supervisionRequests');
-    await team.save();
+//     // ✅ IMPORTANT: Mark the field as modified for proper saving
+//     team.markModified('supervisionRequests');
+//     await team.save();
 
-    // Create the original SupervisionRequest for faculty dashboard
-    const originalSupervisionRequest = new SupervisionRequest({
-      teamId: team._id,
-      facultyId: faculty._id,
-      requesterId: req.user.id,
-      teamName: team.name,
-      facultyName: faculty.name,
-      requesterName: student.name,
-      message: message
-    });
+//     // Create the original SupervisionRequest for faculty dashboard
+//     const originalSupervisionRequest = new SupervisionRequest({
+//       teamId: team._id,
+//       facultyId: faculty._id,
+//       requesterId: req.user.id,
+//       teamName: team.name,
+//       facultyName: faculty.name,
+//       requesterName: student.name,
+//       message: message
+//     });
 
-    await originalSupervisionRequest.save();
+//     await originalSupervisionRequest.save();
 
-    // ✅ NEW: Create notifications for ALL team members
-    const teamMemberIds = [];
-    for (const member of team.members) {
-      const memberStudent = await Student.findOne({ studentId: member.studentId });
-      if (memberStudent && memberStudent._id.toString() !== student._id.toString()) {
-        teamMemberIds.push(memberStudent._id);
-      }
-    }
+//     // ✅ NEW: Create notifications for ALL team members
+//     const teamMemberIds = [];
+//     for (const member of team.members) {
+//       const memberStudent = await Student.findOne({ studentId: member.studentId });
+//       if (memberStudent && memberStudent._id.toString() !== student._id.toString()) {
+//         teamMemberIds.push(memberStudent._id);
+//       }
+//     }
 
-    // Send notifications to all team members
-    for (const memberId of teamMemberIds) {
-      const notification = new Notification({
-        recipientId: memberId,
-        type: 'general',
-        title: 'Supervision Request Sent',
-        message: `Team leader ${student.name} sent a supervision request to ${faculty.name}`,
-        data: {
-          teamId: team._id,
-          teamName: team.name,
-          facultyName: faculty.name,
-          requestId: originalSupervisionRequest._id
-        },
-        read: false
-      });
-      await notification.save();
-    }
+//     // Send notifications to all team members
+//     for (const memberId of teamMemberIds) {
+//       const notification = new Notification({
+//         recipientId: memberId,
+//         type: 'general',
+//         title: 'Supervision Request Sent',
+//         message: `Team leader ${student.name} sent a supervision request to ${faculty.name}`,
+//         data: {
+//           teamId: team._id,
+//           teamName: team.name,
+//           facultyName: faculty.name,
+//           requestId: originalSupervisionRequest._id
+//         },
+//         read: false
+//       });
+//       await notification.save();
+//     }
 
-    console.log(`✅ Supervision request sent to ${faculty.name} by ${student.name} for team ${team.name}`);
+//     console.log(`✅ Supervision request sent to ${faculty.name} by ${student.name} for team ${team.name}`);
 
-    res.json({
-      success: true,
-      message: `Supervision request sent to ${faculty.name} successfully`,
-      requestId: originalSupervisionRequest._id
-    });
+//     res.json({
+//       success: true,
+//       message: `Supervision request sent to ${faculty.name} successfully`,
+//       requestId: originalSupervisionRequest._id
+//     });
 
-  } catch (error) {
-    console.error('Supervision request error:', error);
-    res.status(500).json({ message: 'Server error while sending supervision request' });
-  }
-});
+//   } catch (error) {
+//     console.error('Supervision request error:', error);
+//     res.status(500).json({ message: 'Server error while sending supervision request' });
+//   }
+// });
 
 
 // Add endpoint to get team's supervision requests
@@ -5952,23 +7314,21 @@ app.post('/api/supervision/request', authenticate, async (req, res) => {
     await originalSupervisionRequest.save();
 
     // Create notification for faculty
-    try {
-      const notification = new Notification({
-        recipientId: facultyId,
-        type: 'supervision_request',
-        title: 'New Supervision Request',
-        message: `Team "${team.name}" has requested your supervision for their CSE 400 project`,
-        data: {
-          teamId: team._id,
-          teamName: team.name,
-          requestId: originalSupervisionRequest._id
-        },
-        read: false
-      });
-      await notification.save();
-    } catch (notifError) {
-      console.error('Error creating notification:', notifError);
-    }
+    await createNotification(
+      facultyId,
+      'Faculty',
+      'supervision_request',
+      'New Supervision Request',
+      `Team "${team.name}" has requested your supervision for their CSE 400 project`,
+      {
+        teamId: team._id.toString(),
+        teamName: team.name,
+        requestId: originalSupervisionRequest._id.toString(),
+        senderName: student.name,
+        senderStudentId: student.studentId
+      }
+    );
+
 
     res.json({
       success: true,
@@ -6050,6 +7410,7 @@ app.put('/api/faculty/supervision-requests/:requestId/respond', authenticate, as
           for (const student of teamMemberStudents) {
             const notification = new Notification({
               recipientId: student._id,
+              recipientType: 'Student',
               type: 'general',
               title: 'Supervision Request Accepted!',
               message: `🎉 ${faculty.name} has accepted to supervise your team "${team.name}"!`,
@@ -6125,13 +7486,31 @@ app.get('/api/faculty/supervised-teams', authenticate, async (req, res) => {
         const averageCGPA = validCGPAs.length > 0 ? 
           validCGPAs.reduce((sum, cgpa) => sum + cgpa, 0) / validCGPAs.length : 0;
 
+
+          const currentPhaseStartDate = team.currentPhaseStartDate || team.createdDate || new Date();
+        const currentPhaseDuration = Math.floor((new Date() - currentPhaseStartDate) / (1000 * 60 * 60 * 24));
+        
+        // Get phase history with formatted dates
+        const formattedPhaseHistory = (team.phaseHistory || []).map(phase => ({
+          ...phase,
+          startDate: phase.startDate,
+          endDate: phase.endDate,
+          duration: phase.duration || 0,
+          formattedDuration: phase.duration ? `${phase.duration} days` : 'Ongoing'
+        }));
+
+
         return {
           ...team,
           members: enhancedMembers,
           averageCGPA: averageCGPA.toFixed(2),
           totalCompletedCredits: enhancedMembers.reduce((sum, member) => sum + (member.completedCredits || 0), 0),
           isVisible: team.status !== 'hidden', // For join page visibility
-          canReceiveRequests: team.status === 'recruiting' || team.status === 'active'
+          canReceiveRequests: team.status === 'recruiting' || team.status === 'active',
+          currentPhaseStartDate: currentPhaseStartDate,
+          currentPhaseDuration: currentPhaseDuration,
+          phaseHistory: formattedPhaseHistory,
+          phaseUpdatedAt: team.phaseUpdatedAt
         };
       })
     );
@@ -6186,6 +7565,7 @@ app.put('/api/faculty/teams/:teamId/visibility', authenticate, async (req, res) 
     for (const student of teamMemberStudents) {
       const notification = new Notification({
         recipientId: student._id,
+        recipientType: 'Student',
         type: 'general',
         title: 'Team Visibility Updated',
         message: `Your supervisor ${faculty.name} has ${visible ? 'enabled' : 'disabled'} your team "${team.name}" from receiving new join requests.`,
@@ -6269,6 +7649,7 @@ if (!team.currentSupervisor || team.currentSupervisor.facultyId.toString() !== r
     for (const student of teamMemberStudents) {
       const notification = new Notification({
         recipientId: student._id,
+        recipientType: 'Student',
         type: 'general',
         title: 'Team Status Updated',
         message: `Your supervisor ${faculty.name} has ${statusMessages[status]} your team "${team.name}".${reason ? ` Reason: ${reason}` : ''}`,
@@ -7041,8 +8422,3400 @@ app.get('/api/teams/pending-leader-approvals', authenticate, async (req, res) =>
 });
 
 
-// Optional: Run cleanup on server startup
-cleanupOrphanedSupervisionRequests();
+// Add this endpoint in server.js after your existing team management endpoints
+
+// Admin endpoint to assign supervisor to team
+app.post('/api/admin/teams/:teamId/assign-supervisor', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { facultyId } = req.body;
+
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    const faculty = await Faculty.findById(facultyId);
+    if (!faculty) {
+      return res.status(404).json({ message: 'Faculty not found' });
+    }
+
+    // Check if faculty is active and visible to students
+    if (faculty.status !== 'Active') {
+      return res.status(400).json({ 
+        message: `Faculty ${faculty.name} is not active and cannot supervise teams` 
+      });
+    }
+
+    if (team.currentSupervisor && team.currentSupervisor.facultyId) {
+      return res.status(400).json({ 
+        message: `Team already has supervisor: ${team.currentSupervisor.facultyName}` 
+      });
+    }
+
+
+    const currentMemberCount = team.members?.length || 0;
+    const isSpecialCase = currentMemberCount < 4;
+
+    // Update team with supervisor
+    team.currentSupervisor = {
+      facultyId: faculty._id,
+      facultyName: faculty.name,
+      facultyDepartment: faculty.department,
+      acceptedDate: new Date()
+    };
+
+     team.status = 'active';
+     team.supervisor = faculty._id;
+
+     if (isSpecialCase) {
+      team.specialCase = true;
+      team.specialCaseReason = `Supervisor assigned to incomplete team (${currentMemberCount}/4 members)`;
+      console.log(`🔒 Team "${team.name}" marked as special case - ${currentMemberCount}/4 members`);
+    }
+
+    // Add to supervision requests history if not already there
+    const existingRequest = team.supervisionRequests.find(
+      req => req.facultyId.toString() === facultyId && req.status === 'accepted'
+    );
+
+    if (!existingRequest) {
+      team.supervisionRequests.push({
+        facultyId: faculty._id,
+        facultyName: faculty.name,
+        facultyDepartment: faculty.department,
+        facultyEmail: faculty.email,
+        requestedBy: team.members.find(m => m.role === 'Leader')?._id || team.members[0]?.studentId,
+        requestedByName: team.members.find(m => m.role === 'Leader')?.name || team.members?.name || 'Admin',
+        status: 'accepted',
+        requestDate: new Date(),
+        responseDate: new Date(),
+        message: 'Assigned by administrator'
+      });
+    }
+
+    await team.save();
+
+    // Create notifications for all team members
+    for (const member of team.members) {
+      try {
+        const student = await Student.findOne({ studentId: member.studentId });
+        if (student) {
+          const notification = new Notification({
+            recipientId: student._id,
+            recipientType: 'Student',
+            type: 'general',
+            title: 'Supervisor Assigned',
+            message: `Administrator has assigned ${faculty.name} as supervisor for your team "${team.name}".`,
+            data: {
+              teamId: team._id,
+              teamName: team.name,
+              supervisorName: faculty.name,
+              action: 'supervisor_assigned'
+            },
+            read: false
+          });
+          await notification.save();
+        }
+      } catch (notifError) {
+        console.error('Error creating notification:', notifError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${faculty.name} has been assigned as supervisor to team "${team.name}"`,
+      team: team
+    });
+
+  } catch (error) {
+    console.error('Assign supervisor error:', error);
+    res.status(500).json({ message: 'Server error while assigning supervisor' });
+  }
+});
+
+// Admin endpoint to remove supervisor from team
+app.post('/api/admin/teams/:teamId/remove-supervisor', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    if (!team.currentSupervisor || !team.currentSupervisor.facultyId) {
+      return res.status(400).json({ message: 'Team does not have a supervisor assigned' });
+    }
+
+    const supervisorName = team.currentSupervisor.facultyName;
+
+    // Remove current supervisor
+    team.currentSupervisor = {};
+
+    await team.save();
+
+    // Create notifications for all team members
+    for (const member of team.members) {
+      try {
+        const student = await Student.findOne({ studentId: member.studentId });
+        if (student) {
+          const notification = new Notification({
+            recipientId: student._id,
+            recipientType: 'Student',
+            type: 'general',
+            title: 'Supervisor Removed',
+            message: `Administrator has removed ${supervisorName} as supervisor from your team "${team.name}".`,
+            data: {
+              teamId: team._id,
+              teamName: team.name,
+              removedSupervisor: supervisorName,
+              action: 'supervisor_removed'
+            },
+            read: false
+          });
+          await notification.save();
+        }
+      } catch (notifError) {
+        console.error('Error creating notification:', notifError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${supervisorName} has been removed as supervisor from team "${team.name}"`,
+      team: team
+    });
+
+  } catch (error) {
+    console.error('Remove supervisor error:', error);
+    res.status(500).json({ message: 'Server error while removing supervisor' });
+  }
+});
+
+// Add this function after your other cleanup functions
+const cleanupOrphanedTeamRequests = async () => {
+  try {
+    console.log('Cleaning up orphaned team requests...');
+    
+    const requests = await TeamRequest.find({});
+    let deletedCount = 0;
+    
+    for (const request of requests) {
+      let shouldDelete = false;
+      
+      // Check if target student exists
+      if (request.targetStudentId) {
+        const targetStudent = await Student.findById(request.targetStudentId);
+        if (!targetStudent) {
+          console.log(`Deleting request with invalid targetStudentId: ${request.targetStudentId}`);
+          shouldDelete = true;
+        }
+      }
+      
+      // Check if sender exists
+      if (request.senderId) {
+        const sender = await Student.findById(request.senderId);
+        if (!sender) {
+          console.log(`Deleting request with invalid senderId: ${request.senderId}`);
+          shouldDelete = true;
+        }
+      }
+      
+      // Check if team exists (for team member requests)
+      if (request.teamId) {
+        const team = await Team.findById(request.teamId);
+        if (!team) {
+          console.log(`Deleting request with invalid teamId: ${request.teamId}`);
+          shouldDelete = true;
+        }
+      }
+      
+      if (shouldDelete) {
+        await TeamRequest.findByIdAndDelete(request._id);
+        deletedCount++;
+      }
+    }
+    
+    console.log(`✅ Cleanup completed. Deleted ${deletedCount} orphaned team requests.`);
+    return deletedCount;
+  } catch (error) {
+    console.error('❌ Team request cleanup error:', error);
+    return 0;
+  }
+};
+
+// Add cleanup endpoint for admin
+app.post('/api/admin/cleanup-team-requests', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+    
+    const deletedCount = await cleanupOrphanedTeamRequests();
+    res.json({ 
+      success: true, 
+      message: `Cleaned up ${deletedCount} orphaned team requests` 
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Cleanup failed' });
+  }
+});
+
+
+// Add cleanup endpoint for admin
+app.post('/api/admin/cleanup-team-requests', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+    
+    const deletedCount = await cleanupOrphanedTeamRequests();
+    res.json({ 
+      success: true, 
+      message: `Cleaned up ${deletedCount} orphaned team requests` 
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Cleanup failed' });
+  }
+});
+
+
+// Add this new endpoint after the existing phase update endpoint
+app.put('/api/faculty/teams/:teamId/complete-project', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    if (!team.currentSupervisor || team.currentSupervisor.facultyId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'You are not the supervisor of this team' });
+    }
+
+    // Verify team is in phase C
+    const currentPhase = team.currentPhase || team.phase || 'A';
+    if (currentPhase !== 'C') {
+      return res.status(400).json({ 
+        message: 'Project can only be completed when team is in Phase C' 
+      });
+    }
+
+    const faculty = await Faculty.findById(req.user.id);
+    const now = new Date();
+    
+    // Calculate duration of phase C
+    const phaseStartDate = team.currentPhaseStartDate || team.createdDate || new Date();
+    const phaseDuration = Math.floor((now - phaseStartDate) / (1000 * 60 * 60 * 24));
+
+    // Update phase history - close phase C with completion
+    if (!team.phaseHistory) {
+      team.phaseHistory = [];
+    }
+
+    // Find and close the current Phase C in history
+    const currentPhaseInHistory = team.phaseHistory.find(p => p.phase === 'C' && !p.endDate);
+    if (currentPhaseInHistory) {
+      currentPhaseInHistory.endDate = now;
+      currentPhaseInHistory.duration = phaseDuration;
+      currentPhaseInHistory.completed = true; // Mark as completed
+    } else {
+      // Add Phase C to history if it doesn't exist
+      team.phaseHistory.push({
+        phase: 'C',
+        startDate: phaseStartDate,
+        endDate: now,
+        duration: phaseDuration,
+        completed: true,
+        updatedBy: {
+          facultyId: faculty._id,
+          facultyName: faculty.name
+        }
+      });
+    }
+
+    // Update team status
+    team.status = 'completed';
+    team.projectCompleted = true;
+    team.progressStatus = 'Completed';
+    team.projectCompletedDate = now;
+    team.phaseUpdatedAt = now;
+
+    await team.save();
+
+    // Create notifications for team members
+    const teamMemberStudents = await Student.find({
+      studentId: { $in: team.members.map(m => m.studentId) }
+    });
+
+    for (const student of teamMemberStudents) {
+      const notification = new Notification({
+        recipientId: student._id,
+        recipientType: 'Student',
+        type: 'general',
+        title: 'Project Completed!',
+        message: `Congratulations! Your supervisor ${faculty.name} has marked your project "${team.name}" as completed.`,
+        data: {
+          teamId: team._id,
+          teamName: team.name,
+          supervisorName: faculty.name,
+          completionDate: now,
+          action: 'project_completed'
+        },
+        read: false
+      });
+      await notification.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Project "${team.name}" has been marked as completed successfully!`,
+      team: {
+        id: team._id,
+        name: team.name,
+        status: team.status,
+        projectCompleted: team.projectCompleted,
+        projectCompletedDate: now,
+        phaseDuration: phaseDuration
+      }
+    });
+
+  } catch (error) {
+    console.error('Complete project error:', error);
+    res.status(500).json({ message: 'Server error while completing project' });
+  }
+});
+
+
+app.get('/api/faculty/supervised-teams-progress', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const supervisedTeams = await Team.find({
+      'currentSupervisor.facultyId': req.user.id
+    }).lean();
+
+    // Enhance teams with progress data
+    const teamsWithProgress = await Promise.all(
+      supervisedTeams.map(async (team) => {
+        // Get student details
+        const memberStudentIds = team.members.map(member => member.studentId);
+        const studentsWithDetails = await Student.find({
+          studentId: { $in: memberStudentIds }
+        }).select('studentId name email program completedCredits cgpa avatar phone');
+
+        const studentDetailsMap = new Map(
+          studentsWithDetails.map(student => [student.studentId, student])
+        );
+
+        const enhancedMembers = team.members.map(member => {
+          const studentDetails = studentDetailsMap.get(member.studentId);
+          return {
+            ...member,
+            email: studentDetails?.email || 'Not available',
+            program: studentDetails?.program || 'Not specified',
+            completedCredits: studentDetails?.completedCredits || 0,
+            cgpa: studentDetails?.cgpa || 0.0,
+            avatar: studentDetails?.avatar || null,
+            phone: studentDetails?.phone || 'Not available'
+          };
+        });
+
+        // Calculate average CGPA
+        const validCGPAs = enhancedMembers.filter(m => m.cgpa > 0).map(m => m.cgpa);
+        const averageCGPA = validCGPAs.length > 0 ? 
+          validCGPAs.reduce((sum, cgpa) => sum + cgpa, 0) / validCGPAs.length : 0;
+
+        // Get latest submission/deliverable info
+        const latestSubmission = await DeliverableSubmission.findOne({
+          teamId: team._id
+        }).sort({ submittedAt: -1 }).populate('deliverableId', 'name');
+
+        return {
+          ...team,
+          members: enhancedMembers,
+          averageCGPA: averageCGPA.toFixed(2),
+          // Initialize milestone tracking if not exists
+          completedMilestones: team.completedMilestones || [],
+          progressStatus: team.progressStatus || 'Not Set',
+          statusNotes: team.statusNotes || '',
+          latestSubmission: latestSubmission ? {
+            title: latestSubmission.deliverableId?.name || 'Untitled',
+            date: latestSubmission.submittedAt,
+            status: latestSubmission.status
+          } : null
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      teams: teamsWithProgress
+    });
+
+  } catch (error) {
+    console.error('Get supervised teams progress error:', error);
+    res.status(500).json({ message: 'Server error while fetching supervised teams progress' });
+  }
+});
+
+// Update milestone status
+app.put('/api/faculty/teams/:teamId/milestone', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { milestoneId, isCompleted } = req.body;
+
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Verify faculty is the supervisor
+    if (!team.currentSupervisor || team.currentSupervisor.facultyId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'You are not the supervisor of this team' });
+    }
+
+    // Initialize completedMilestones array if it doesn't exist
+    if (!team.completedMilestones) {
+      team.completedMilestones = [];
+    }
+
+    if (isCompleted) {
+      // Add milestone if not already completed
+      if (!team.completedMilestones.includes(milestoneId)) {
+        team.completedMilestones.push(milestoneId);
+      }
+    } else {
+      // Remove milestone from completed list
+      team.completedMilestones = team.completedMilestones.filter(id => id !== milestoneId);
+    }
+
+    team.lastProgressUpdate = new Date();
+    await team.save();
+
+    // Notify team members
+    const faculty = await Faculty.findById(req.user.id);
+    const teamMemberStudents = await Student.find({
+      studentId: { $in: team.members.map(m => m.studentId) }
+    });
+
+    for (const student of teamMemberStudents) {
+      const notification = new Notification({
+        recipientId: student._id,
+        recipientType: 'Student',
+        type: 'general',
+        recipientType: 'Student',
+        title: 'Milestone Updated',
+        message: `Your supervisor ${faculty.name} has ${isCompleted ? 'marked a milestone as completed' : 'unmarked a milestone'} for your team "${team.name}".`,        data: {
+          teamId: team._id,
+          teamName: team.name,
+          milestoneId: milestoneId,
+          isCompleted: isCompleted,
+          action: 'milestone_update'
+        },
+        read: false
+      });
+      await notification.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Milestone updated successfully',
+      completedMilestones: team.completedMilestones
+    });
+
+  } catch (error) {
+    console.error('Update milestone error:', error);
+    res.status(500).json({ message: 'Server error while updating milestone' });
+  }
+});
+
+// Update team progress status
+app.put('/api/faculty/teams/:teamId/progress-status', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { progressStatus, statusNotes } = req.body;
+
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const validStatuses = ['On Track', 'Needs Improvement', 'Delayed', 'Completed'];
+    if (!validStatuses.includes(progressStatus)) {
+      return res.status(400).json({ message: 'Invalid progress status' });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Verify faculty is the supervisor
+    if (!team.currentSupervisor || team.currentSupervisor.facultyId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'You are not the supervisor of this team' });
+    }
+
+    team.progressStatus = progressStatus;
+    team.statusNotes = statusNotes || '';
+    team.lastProgressUpdate = new Date();
+    await team.save();
+
+    // Notify team members
+    const faculty = await Faculty.findById(req.user.id);
+    const teamMemberStudents = await Student.find({
+      studentId: { $in: team.members.map(m => m.studentId) }
+    });
+
+    for (const student of teamMemberStudents) {
+      const notification = new Notification({
+        recipientId: student._id,
+        recipientType: 'Student',
+        type: 'general',
+        title: 'Progress Status Updated',
+        message: `Your supervisor ${faculty.name} has updated your team's progress status to: ${progressStatus}`,
+        data: {
+          teamId: team._id,
+          teamName: team.name,
+          progressStatus: progressStatus,
+          statusNotes: statusNotes,
+          action: 'progress_status_update'
+        },
+        read: false
+      });
+      await notification.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Progress status updated successfully',
+      progressStatus: team.progressStatus,
+      statusNotes: team.statusNotes
+    });
+
+  } catch (error) {
+    console.error('Update progress status error:', error);
+    res.status(500).json({ message: 'Server error while updating progress status' });
+  }
+});
+
+
+app.post('/api/faculty/materials/upload', authenticate, upload.single('file'), async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const { title, description, targetType, targetPhase, targetTeams, targetStudents } = req.body;
+
+    // Validate required fields
+    if (!title || !targetType) {
+      return res.status(400).json({ message: 'Title and target type are required' });
+    }
+
+    // Validate target type specific requirements
+    if (targetType === 'phase' && !targetPhase) {
+      return res.status(400).json({ message: 'Target phase is required' });
+    }
+    if (targetType === 'teams' && (!targetTeams || JSON.parse(targetTeams).length === 0)) {
+      return res.status(400).json({ message: 'At least one team must be selected' });
+    }
+    if (targetType === 'students' && (!targetStudents || JSON.parse(targetStudents).length === 0)) {
+      return res.status(400).json({ message: 'At least one student must be selected' });
+    }
+
+    const faculty = await Faculty.findById(req.user.id);
+    if (!faculty) {
+      return res.status(404).json({ message: 'Faculty not found' });
+    }
+
+    // Upload to Cloudinary
+    const fileStr = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+    
+    const timestamp = Date.now();
+    const originalName = req.file.originalname.split('.')[0];
+    const extension = req.file.originalname.split('.').pop();
+    const uniqueFilename = `${originalName}_${timestamp}`;
+
+    const uploadResponse = await cloudinary.uploader.upload(fileStr, {
+      folder: 'student_files_chat',
+      public_id: uniqueFilename,
+      resource_type: 'auto',
+      overwrite: false,
+      unique_filename: true,
+      use_filename: true,
+    });
+
+    // Create material record
+    const material = new Material({
+      title: title.trim(),
+      description: description?.trim() || '',
+      fileName: req.file.originalname,
+      fileType: req.file.mimetype,
+      fileSize: req.file.size,
+      fileUrl: uploadResponse.secure_url,
+      downloadUrl: uploadResponse.secure_url,
+      cloudinaryId: uploadResponse.public_id,
+      uploadedBy: faculty._id,
+      uploadedByName: faculty.name,
+      targetType,
+      targetPhase: targetType === 'phase' ? targetPhase : undefined,
+      targetTeams: targetType === 'teams' ? JSON.parse(targetTeams) : undefined,
+      targetStudents: targetType === 'students' ? JSON.parse(targetStudents) : undefined
+    });
+
+    await material.save();
+
+    // Create notifications for targeted audience
+    await createMaterialNotifications(material);
+
+    res.json({
+      success: true,
+      message: 'Material uploaded successfully',
+      material: {
+        id: material._id,
+        title: material.title,
+        fileName: material.fileName,
+        fileUrl: material.fileUrl,
+        targetType: material.targetType
+      }
+    });
+
+  } catch (error) {
+    console.error('Material upload error:', error);
+    res.status(500).json({ 
+      message: 'Failed to upload material',
+      error: error.message 
+    });
+  }
+});
+
+// Get faculty's uploaded materials
+app.get('/api/faculty/materials', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const materials = await Material.find({
+      uploadedBy: req.user.id,
+      isActive: true
+    })
+    .populate('targetTeams', 'name')
+    .populate('targetStudents', 'name studentId')
+    .sort({ uploadDate: -1 });
+
+    res.json({
+      success: true,
+      materials
+    });
+
+  } catch (error) {
+    console.error('Get materials error:', error);
+    res.status(500).json({ message: 'Failed to fetch materials' });
+  }
+});
+
+// Delete material
+// Delete material endpoint
+app.delete('/api/faculty/materials/:materialId', authenticate, async (req, res) => {
+  try {
+    const { materialId } = req.params;
+    
+    // ✅ FIX: Use proper Mongoose ObjectId validation
+    if (!mongoose.Types.ObjectId.isValid(materialId)) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid material ID format' 
+      });
+    }
+
+    const material = await Material.findById(materialId);
+    if (!material) {
+      return res.status(404).json({ message: 'Material not found' });
+    }
+
+    // Verify the faculty owns this material or is admin
+    if (req.user.role !== 'admin' && material.uploadedBy.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Unauthorized to delete this material' });
+    }
+
+    // Delete from Cloudinary
+    try {
+      if (material.cloudinaryId) {
+        await cloudinary.uploader.destroy(material.cloudinaryId);
+      }
+    } catch (cloudinaryError) {
+      console.error('Cloudinary deletion error:', cloudinaryError);
+    }
+
+    // Delete from database
+    await Material.findByIdAndDelete(materialId);
+
+    res.json({
+      success: true,
+      message: 'Material deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete material error:', error);
+    res.status(500).json({ message: 'Failed to delete material' });
+  }
+});
+
+
+// Get materials for students
+
+// Download material (track downloads)
+app.get('/api/materials/:materialId/download', authenticate, async (req, res) => {
+  try {
+    const { materialId } = req.params;
+    
+     if (!mongoose.Types.ObjectId.isValid(materialId)) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid material ID format' 
+      });
+    }
+
+    const material = await Material.findById(materialId);
+    if (!material) {
+      return res.status(404).json({ message: 'Material not found' });
+    }
+
+    // Check access permissions for students
+    if (req.user.role === 'student') {
+      const student = await Student.findById(req.user.id);
+      const team = await Team.findOne({
+        'members.studentId': student.studentId
+      });
+      const currentPhase = team?.currentPhase || team?.phase || 'A';
+
+      let hasAccess = false;
+      
+      if (material.targetType === 'all') {
+        hasAccess = true;
+      } else if (material.targetType === 'phase' && material.targetPhase === currentPhase) {
+        hasAccess = true;
+      } else if (material.targetType === 'teams' && team && material.targetTeams.includes(team._id)) {
+        hasAccess = true;
+      } else if (material.targetType === 'students' && material.targetStudents.includes(req.user.id)) {
+        hasAccess = true;
+      }
+
+      if (!hasAccess) {
+        return res.status(403).json({ message: 'Access denied to this material' });
+      }
+    }
+
+    // Increment download count
+    await Material.findByIdAndUpdate(materialId, {
+      $inc: { downloadCount: 1 }
+    });
+
+    // Redirect to Cloudinary URL
+    res.redirect(material.downloadUrl);
+
+  } catch (error) {
+    console.error('Download material error:', error);
+    res.status(500).json({ message: 'Failed to download material' });
+  }
+});
+
+// Helper function to create notifications
+const createMaterialNotifications = async (material) => {
+  try {
+    let recipients = [];
+    
+    if (material.targetType === 'all') {
+      // Notify all active students
+      const allStudents = await Student.find({ status: 'Active' }).select('_id');
+      recipients = allStudents.map(s => s._id);
+    } else if (material.targetType === 'phase') {
+      // Notify students in specific phase
+      const teamsInPhase = await Team.find({
+        $or: [
+          { currentPhase: material.targetPhase },
+          { phase: material.targetPhase }
+        ]
+      });
+      
+      const studentIds = [];
+      for (const team of teamsInPhase) {
+        for (const member of team.members) {
+          const student = await Student.findOne({ studentId: member.studentId });
+          if (student) {
+            studentIds.push(student._id);
+          }
+        }
+      }
+      recipients = studentIds;
+    } else if (material.targetType === 'teams') {
+      // Notify members of specific teams
+      const teams = await Team.find({ _id: { $in: material.targetTeams } });
+      const studentIds = [];
+      
+      for (const team of teams) {
+        for (const member of team.members) {
+          const student = await Student.findOne({ studentId: member.studentId });
+          if (student) {
+            studentIds.push(student._id);
+          }
+        }
+      }
+      recipients = studentIds;
+    } else if (material.targetType === 'students') {
+      recipients = material.targetStudents;
+    }
+
+    // Create notifications
+    for (const studentId of recipients) {
+      const notification = new Notification({
+        recipientId: studentId,
+        type: 'general',
+        title: 'New Learning Material Available',
+        message: `${material.uploadedByName} has shared a new material: "${material.title}"`,
+        data: {
+          materialId: material._id,
+          materialTitle: material.title,
+          facultyName: material.uploadedByName,
+          action: 'material_shared'
+        },
+        read: false
+      });
+      
+      await notification.save();
+    }
+
+  } catch (error) {
+    console.error('Error creating material notifications:', error);
+  }
+};
+
+
+// Get all active students for materials upload
+app.get('/api/faculty/all-active-students', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Get ALL active students for materials upload
+    const students = await Student.find({
+      status: 'Active'
+    }).select('_id name studentId email program').sort({ name: 1 });
+
+    res.json({
+      success: true,
+      students
+    });
+
+  } catch (error) {
+    console.error('Get all active students error:', error);
+    res.status(500).json({ message: 'Failed to fetch students' });
+  }
+});
+
+
+// Get faculty's supervised students
+app.get('/api/faculty/all-students', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Get all teams supervised by this faculty
+    const supervisedTeams = await Team.find({
+      'currentSupervisor.facultyId': req.user.id
+    });
+
+    // Extract all student IDs from supervised teams
+    const studentIds = [];
+    supervisedTeams.forEach(team => {
+      team.members.forEach(member => {
+        studentIds.push(member.studentId);
+      });
+    });
+
+    // Get student details
+    const students = await Student.find({
+      studentId: { $in: studentIds },
+      status: 'Active'
+    }).select('_id name studentId email program');
+
+    res.json({
+      success: true,
+      students
+    });
+
+  } catch (error) {
+    console.error('Get faculty students error:', error);
+    res.status(500).json({ message: 'Failed to fetch students' });
+  }
+});
+
+
+// ===== DELIVERABLES API ENDPOINTS =====
+
+// Faculty: Create deliverable for supervised team
+app.post('/api/faculty/deliverables', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { 
+      teamId, 
+      name, 
+      description, 
+      phase, 
+      deadline, 
+      allowedFileTypes, 
+      maxFileSize 
+    } = req.body;
+
+    // Verify faculty supervises this team
+    const team = await Team.findOne({
+      _id: teamId,
+      'currentSupervisor.facultyId': req.user.id
+    });
+
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found or you are not the supervisor' });
+    }
+
+    const deliverable = new Deliverable({
+      teamId,
+      supervisorId: req.user.id,
+      name: name.trim(),
+      description: description?.trim() || '',
+      phase,
+      deadline: new Date(deadline),
+      allowedFileTypes: allowedFileTypes || ['pdf', 'docx', 'zip', 'pptx'],
+      maxFileSize: maxFileSize || 20
+    });
+
+    await deliverable.save();
+
+    // Notify team members
+    const teamMemberStudents = await Student.find({
+      studentId: { $in: team.members.map(m => m.studentId) }
+    });
+
+    const faculty = await Faculty.findById(req.user.id);
+
+    for (const student of teamMemberStudents) {
+      const notification = new Notification({
+        recipientId: student._id,
+        recipientType: 'Student',
+        type: 'general',
+        title: 'New Deliverable Assigned',
+        message: `Your supervisor ${faculty.name} has assigned a new deliverable: "${name}" for Phase ${phase}`,
+        data: {
+          teamId: team._id,
+          deliverableId: deliverable._id,
+          deliverableName: name,
+          phase: phase,
+          deadline: deadline
+        },
+        read: false
+      });
+      await notification.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Deliverable created successfully',
+      deliverable
+    });
+
+  } catch (error) {
+    console.error('Create deliverable error:', error);
+    res.status(500).json({ message: 'Server error while creating deliverable' });
+  }
+});
+
+// Faculty: Get deliverables for supervised teams
+app.get('/api/faculty/deliverables', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const deliverables = await Deliverable.find({
+      supervisorId: req.user.id,
+      isActive: true
+    })
+    .populate('teamId', 'name members')
+    .sort({ deadline: 1 });
+
+    // Get submission counts for each deliverable
+    const deliverablesWithStats = await Promise.all(
+      deliverables.map(async (deliverable) => {
+        const submissionCount = await DeliverableSubmission.countDocuments({
+          deliverableId: deliverable._id,
+          isLatest: true
+        });
+
+        const pendingCount = await DeliverableSubmission.countDocuments({
+          deliverableId: deliverable._id,
+          isLatest: true,
+          status: 'pending'
+        });
+
+        return {
+          ...deliverable.toObject(),
+          submissionCount,
+          pendingCount,
+          isOverdue: new Date() > deliverable.deadline
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      deliverables: deliverablesWithStats
+    });
+
+  } catch (error) {
+    console.error('Get faculty deliverables error:', error);
+    res.status(500).json({ message: 'Server error while fetching deliverables' });
+  }
+});
+
+// Faculty: Get submissions for a specific deliverable
+app.get('/api/faculty/deliverables/:deliverableId/submissions', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { deliverableId } = req.params;
+
+    // Verify faculty owns this deliverable
+    const deliverable = await Deliverable.findOne({
+      _id: deliverableId,
+      supervisorId: req.user.id
+    }).populate('teamId', 'name members');
+
+    if (!deliverable) {
+      return res.status(404).json({ message: 'Deliverable not found' });
+    }
+
+    const submissions = await DeliverableSubmission.find({
+      deliverableId,
+      isLatest: true
+    })
+    .populate('submittedBy', 'name studentId email')
+    .sort({ submittedAt: -1 });
+
+    res.json({
+      success: true,
+      deliverable,
+      submissions
+    });
+
+  } catch (error) {
+    console.error('Get submissions error:', error);
+    res.status(500).json({ message: 'Server error while fetching submissions' });
+  }
+});
+
+// Faculty: Review submission (add feedback, marks, approve/reject)
+app.put('/api/faculty/submissions/:submissionId/review', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { submissionId } = req.params;
+    const { status, feedback, marks } = req.body;
+
+    const submission = await DeliverableSubmission.findById(submissionId)
+      .populate('deliverableId')
+      .populate('teamId', 'name members')
+      .populate('submittedBy', 'name studentId');
+
+    if (!submission) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    // Verify faculty supervises this team
+    if (submission.deliverableId.supervisorId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Access denied: Not your supervised team' });
+    }
+
+    // Update submission
+    submission.status = status;
+    submission.feedback = feedback || '';
+    submission.marks = marks;
+    submission.reviewedBy = req.user.id;
+    submission.reviewedAt = new Date();
+
+    await submission.save();
+
+    // Notify team members
+    const faculty = await Faculty.findById(req.user.id);
+    const teamMemberStudents = await Student.find({
+      studentId: { $in: submission.teamId.members.map(m => m.studentId) }
+    });
+
+    const statusMessages = {
+      'approved': 'has been approved',
+      'rejected': 'has been rejected',
+      'needs_revision': 'needs revision'
+    };
+
+    for (const student of teamMemberStudents) {
+      const notification = new Notification({
+        recipientId: student._id,
+        recipientType: 'Student',
+        type: 'general',
+        title: 'Deliverable Reviewed',
+        message: `Your submission for "${submission.deliverableId.name}" ${statusMessages[status]} by ${faculty.name}`,
+        data: {
+          deliverableId: submission.deliverableId._id,
+          submissionId: submission._id,
+          status: status,
+          marks: marks,
+          feedback: feedback
+        },
+        read: false
+      });
+      await notification.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Submission reviewed successfully',
+      submission
+    });
+
+  } catch (error) {
+    console.error('Review submission error:', error);
+    res.status(500).json({ message: 'Server error while reviewing submission' });
+  }
+});
+
+
+// Student: Upload deliverable submission
+app.post('/api/students/deliverables/:deliverableId/submit', authenticate, upload.single('file'), async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Access denied: Students only' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const { deliverableId } = req.params;
+    const student = await Student.findById(req.user.id);
+
+    // Find student's team and verify they're the leader
+    const team = await Team.findOne({
+      'members.studentId': student.studentId
+    });
+
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    const teamMember = team.members.find(m => m.studentId === student.studentId);
+    if (!teamMember || teamMember.role !== 'Leader') {
+      return res.status(403).json({ message: 'Only team leaders can upload deliverables' });
+    }
+
+    // Get deliverable details
+    const deliverable = await Deliverable.findOne({
+      _id: deliverableId,
+      teamId: team._id,
+      isActive: true
+    });
+
+    if (!deliverable) {
+      return res.status(404).json({ message: 'Deliverable not found' });
+    }
+
+    // Check file type
+    const fileExtension = req.file.originalname.split('.').pop().toLowerCase();
+    if (!deliverable.allowedFileTypes.includes(fileExtension)) {
+      return res.status(400).json({ 
+        message: `File type .${fileExtension} not allowed. Allowed types: ${deliverable.allowedFileTypes.join(', ')}` 
+      });
+    }
+
+    // Check file size
+    const fileSizeInMB = req.file.size / (1024 * 1024);
+    if (fileSizeInMB > deliverable.maxFileSize) {
+      return res.status(400).json({ 
+        message: `File size ${fileSizeInMB.toFixed(2)}MB exceeds limit of ${deliverable.maxFileSize}MB` 
+      });
+    }
+
+    // Upload to Cloudinary
+    const uploadResult = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'auto',
+          folder: `deliverables/${team._id}/${deliverableId}`,
+          public_id: `${Date.now()}_${req.file.originalname}`,
+          use_filename: true,
+          unique_filename: true
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+      stream.end(req.file.buffer);
+    });
+
+    // Mark previous submissions as not latest
+    await DeliverableSubmission.updateMany(
+      { deliverableId, teamId: team._id },
+      { isLatest: false }
+    );
+
+    // Get version number
+    const previousSubmissions = await DeliverableSubmission.countDocuments({
+      deliverableId,
+      teamId: team._id
+    });
+
+    // Create new submission
+    const submission = new DeliverableSubmission({
+      deliverableId,
+      teamId: team._id,
+      submittedBy: req.user.id,
+      submitterName: student.name,
+      fileName: uploadResult.public_id,
+      originalName: req.file.originalname,
+      fileSize: req.file.size,
+      fileType: fileExtension,
+      cloudinaryId: uploadResult.public_id,
+      fileUrl: uploadResult.secure_url,
+      version: previousSubmissions + 1,
+      isLatest: true
+    });
+
+    await submission.save();
+
+    await createNotification(
+      deliverable.supervisorId,
+      'Faculty',
+      'deliverable_submitted',
+      'New Deliverable Submission',
+      `Team "${team.name}" has submitted "${deliverable.name}" for review`,
+      {
+        teamId: team._id.toString(),
+        teamName: team.name,
+        deliverableId: deliverable._id.toString(),
+        deliverableName: deliverable.name,
+        submissionId: submission._id.toString(),
+        senderName: student.name,
+        senderStudentId: student.studentId
+      }
+    );
+
+    
+    res.json({
+      success: true,
+      message: 'Deliverable submitted successfully',
+      submission
+    });
+
+  } catch (error) {
+    console.error('Submit deliverable error:', error);
+    res.status(500).json({ 
+      message: 'Server error while submitting deliverable',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Download deliverable file
+app.get('/api/deliverables/submissions/:submissionId/download', authenticate, async (req, res) => {
+  try {
+    const { submissionId } = req.params;
+    
+    const submission = await DeliverableSubmission.findById(submissionId)
+      .populate('deliverableId')
+      .populate('teamId', 'name members');
+
+    if (!submission) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    // Check authorization
+    if (req.user.role === 'student') {
+      const student = await Student.findById(req.user.id);
+      const isTeamMember = submission.teamId.members.some(m => m.studentId === student.studentId);
+      if (!isTeamMember) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+    } else if (req.user.role === 'faculty') {
+      if (submission.deliverableId.supervisorId.toString() !== req.user.id) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+    } else {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    // Redirect to Cloudinary URL
+    res.redirect(submission.fileUrl);
+
+  } catch (error) {
+    console.error('Download deliverable error:', error);
+    res.status(500).json({ message: 'Server error while downloading file' });
+  }
+});
+
+// ===== ADMIN DELIVERABLES API ENDPOINTS =====
+
+// Admin: Get all deliverable submissions across all teams
+app.get('/api/admin/deliverables', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
+    const submissions = await DeliverableSubmission.find({ isLatest: true })
+      .populate({
+        path: 'deliverableId',
+        populate: {
+          path: 'supervisorId',
+          select: 'name email department'
+        }
+      })
+      .populate('teamId', 'name members currentSupervisor')
+      .populate('submittedBy', 'name studentId email')
+      .sort({ submittedAt: -1 });
+
+    // Enhance submissions with team and supervisor info
+    const enhancedSubmissions = submissions.map(submission => {
+      const teamName = submission.teamId?.name || 'Unknown Team';
+      const supervisorName = submission.teamId?.currentSupervisor?.facultyName || 
+                           submission.deliverableId?.supervisorId?.name || 'No Supervisor';
+      
+      return {
+        ...submission.toObject(),
+        teamName,
+        supervisorName,
+        name: submission.deliverableId?.name || 'Unknown Deliverable',
+        phase: submission.deliverableId?.phase || 'A',
+        deadline: submission.deliverableId?.deadline
+      };
+    });
+
+    res.json({
+      success: true,
+      submissions: enhancedSubmissions
+    });
+
+  } catch (error) {
+    console.error('Admin get deliverables error:', error);
+    res.status(500).json({ message: 'Server error while fetching deliverables' });
+  }
+});
+
+// Admin: Update deliverable status
+app.put('/api/admin/deliverables/:deliverableId/status', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
+    const { deliverableId } = req.params;
+    const { status } = req.body;
+
+    if (!['pending', 'approved', 'rejected', 'needs_revision'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status' });
+    }
+
+    const submission = await DeliverableSubmission.findByIdAndUpdate(
+      deliverableId,
+      { 
+        status,
+        reviewedAt: new Date(),
+        reviewedBy: req.user.id
+      },
+      { new: true }
+    ).populate('teamId', 'name members')
+     .populate('deliverableId', 'name');
+
+    if (!submission) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    // Notify team members
+    if (submission.teamId?.members) {
+      const teamMemberStudents = await Student.find({
+        studentId: { $in: submission.teamId.members.map(m => m.studentId) }
+      });
+
+      const statusMessages = {
+        'approved': 'has been approved by admin',
+        'rejected': 'has been rejected by admin',
+        'needs_revision': 'needs revision (admin review)'
+      };
+
+      for (const student of teamMemberStudents) {
+        const notification = new Notification({
+          recipientId: student._id,
+          recipientType: 'Student',
+          type: 'general',
+          title: 'Deliverable Status Updated',
+          message: `Your submission "${submission.deliverableId.name}" ${statusMessages[status]}`,
+          data: {
+            deliverableId: submission.deliverableId._id,
+            submissionId: submission._id,
+            status: status,
+            updatedBy: 'Administrator'
+          },
+          read: false
+        });
+        await notification.save();
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Deliverable ${status} successfully`,
+      submission
+    });
+
+  } catch (error) {
+    console.error('Admin update deliverable status error:', error);
+    res.status(500).json({ message: 'Server error while updating status' });
+  }
+});
+
+// Admin: Add feedback to deliverable
+app.put('/api/admin/deliverables/:deliverableId/feedback', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
+    const { deliverableId } = req.params;
+    const { status, feedback, marks } = req.body;
+
+    const submission = await DeliverableSubmission.findByIdAndUpdate(
+      deliverableId,
+      {
+        status,
+        feedback: feedback || '',
+        marks: marks ? parseInt(marks) : null,
+        reviewedBy: req.user.id,
+        reviewedAt: new Date()
+      },
+      { new: true }
+    ).populate('teamId', 'name members')
+     .populate('deliverableId', 'name');
+
+    if (!submission) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    // Notify team members
+    if (submission.teamId?.members) {
+      const teamMemberStudents = await Student.find({
+        studentId: { $in: submission.teamId.members.map(m => m.studentId) }
+      });
+
+      for (const student of teamMemberStudents) {
+        const notification = new Notification({
+          recipientId: student._id,
+          recipientType: 'Student',
+          type: 'general',
+          title: 'Deliverable Feedback Received',
+          message: `Administrator provided feedback for "${submission.deliverableId.name}": ${feedback.substring(0, 100)}...`,
+          data: {
+            deliverableId: submission.deliverableId._id,
+            submissionId: submission._id,
+            status: status,
+            feedback: feedback,
+            marks: marks
+          },
+          read: false
+        });
+        await notification.save();
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Feedback submitted successfully',
+      submission
+    });
+
+  } catch (error) {
+    console.error('Admin feedback error:', error);
+    res.status(500).json({ message: 'Server error while submitting feedback' });
+  }
+});
+
+// Admin: Download deliverable
+app.get('/api/admin/deliverables/:deliverableId/download', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
+    const { deliverableId } = req.params;
+    
+    const submission = await DeliverableSubmission.findById(deliverableId);
+    if (!submission) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    // Set headers for file download
+    res.setHeader('Content-Disposition', `attachment; filename="${submission.originalName}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    
+    // Redirect to Cloudinary URL
+    res.redirect(submission.fileUrl);
+
+  } catch (error) {
+    console.error('Admin download error:', error);
+    res.status(500).json({ message: 'Server error while downloading file' });
+  }
+});
+
+// Admin: Get/Update deliverable global settings
+app.get('/api/admin/deliverables/settings', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
+    // For now, return default settings. You can store these in a separate collection if needed
+    const defaultSettings = {
+      allowResubmissions: true,
+      autoNotifyFaculty: true,
+      maxFileSize: 20, // MB
+      allowedFileTypes: ['pdf', 'docx', 'zip', 'pptx', 'txt']
+    };
+
+    res.json({
+      success: true,
+      settings: defaultSettings
+    });
+
+  } catch (error) {
+    console.error('Get deliverable settings error:', error);
+    res.status(500).json({ message: 'Server error while fetching settings' });
+  }
+});
+
+app.put('/api/admin/deliverables/settings', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
+    const { allowResubmissions, autoNotifyFaculty } = req.body;
+
+    // For now, just return success. In production, you'd save these to database
+    res.json({
+      success: true,
+      message: 'Settings updated successfully',
+      settings: {
+        allowResubmissions,
+        autoNotifyFaculty
+      }
+    });
+
+  } catch (error) {
+    console.error('Update deliverable settings error:', error);
+    res.status(500).json({ message: 'Server error while updating settings' });
+  }
+});
+
+
+// Get notifications for faculty
+app.get('/api/faculty/notifications', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { page = 1, limit = 20 } = req.query;
+    
+    const notifications = await Notification.find({
+      recipientId: req.user.id,
+      recipientType: 'Faculty'
+    })
+    .sort({ createdAt: -1 })
+    .limit(limit * 1)
+    .skip((page - 1) * limit);
+
+    const unreadCount = await Notification.countDocuments({
+      recipientId: req.user.id,
+      recipientType: 'Faculty',
+      read: false
+    });
+
+    res.json({
+      success: true,
+      notifications,
+      unreadCount,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: await Notification.countDocuments({
+          recipientId: req.user.id,
+          recipientType: 'Faculty'
+        })
+      }
+    });
+
+  } catch (error) {
+    console.error('Get faculty notifications error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Mark faculty notification as read
+app.put('/api/faculty/notifications/:id/read', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const notification = await Notification.findOneAndUpdate(
+      { 
+        _id: req.params.id, 
+        recipientId: req.user.id,
+        recipientType: 'Faculty'
+      },
+      { read: true },
+      { new: true }
+    );
+
+    if (!notification) {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+
+    res.json({
+      success: true,
+      notification
+    });
+
+  } catch (error) {
+    console.error('Mark notification read error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Mark all faculty notifications as read
+app.put('/api/faculty/notifications/mark-all-read', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    await Notification.updateMany(
+      { 
+        recipientId: req.user.id,
+        recipientType: 'Faculty',
+        read: false
+      },
+      { read: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'All notifications marked as read'
+    });
+
+  } catch (error) {
+    console.error('Mark all notifications read error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get unread notification count for faculty
+app.get('/api/faculty/notifications/unread-count', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const count = await Notification.countDocuments({
+      recipientId: req.user.id,
+      recipientType: 'Faculty',
+      read: false
+    });
+
+    res.json({ success: true, count });
+
+  } catch (error) {
+    console.error('Get unread count error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
+// Create custom milestone
+app.post('/api/faculty/teams/:teamId/custom-milestone', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { teamId } = req.params;
+    const { name, description, phase, weight, dueDate } = req.body;
+
+    // Verify faculty supervises this team
+    const team = await Team.findOne({
+      _id: teamId,
+      'currentSupervisor.facultyId': req.user.id
+    });
+
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found or you are not the supervisor' });
+    }
+
+    // Validate input
+    if (!name || name.trim().length === 0) {
+      return res.status(400).json({ message: 'Milestone name is required' });
+    }
+
+    if (!['A', 'B', 'C'].includes(phase)) {
+      return res.status(400).json({ message: 'Invalid phase' });
+    }
+
+    if (weight < 1 || weight > 100) {
+      return res.status(400).json({ message: 'Weight must be between 1 and 100' });
+    }
+
+    // Create unique ID for the milestone
+    const milestoneId = `custom_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    const customMilestone = new CustomMilestone({
+      teamId,
+      supervisorId: req.user.id,
+      name: name.trim(),
+      description: description?.trim() || '',
+      phase,
+      weight: parseInt(weight),
+      dueDate: dueDate ? new Date(dueDate) : null,
+      id: milestoneId
+    });
+
+    await customMilestone.save();
+
+    // Notify team members
+    const faculty = await Faculty.findById(req.user.id);
+    const teamMemberStudents = await Student.find({
+      studentId: { $in: team.members.map(m => m.studentId) }
+    });
+
+    for (const student of teamMemberStudents) {
+      const notification = new Notification({
+        recipientId: student._id,
+        recipientType: 'Student',
+        type: 'general',
+        title: 'New Custom Milestone Added',
+        message: `Your supervisor ${faculty.name} has added a new milestone "${name}" for Phase ${phase}`,
+        data: {
+          teamId: team._id,
+          teamName: team.name,
+          milestoneName: name,
+          phase: phase
+        },
+        read: false
+      });
+      await notification.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Custom milestone created successfully',
+      milestone: customMilestone
+    });
+
+  } catch (error) {
+    console.error('Create custom milestone error:', error);
+    res.status(500).json({ message: 'Server error while creating milestone' });
+  }
+});
+
+// Get custom milestones for supervised teams
+app.get('/api/faculty/custom-milestones', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const customMilestones = await CustomMilestone.find({
+      supervisorId: req.user.id,
+      isActive: true
+    }).populate('teamId', 'name');
+
+    // Group milestones by team ID
+    const milestonesByTeam = {};
+    customMilestones.forEach(milestone => {
+      if (milestone.teamId) {
+        const teamId = milestone.teamId._id.toString();
+        if (!milestonesByTeam[teamId]) {
+          milestonesByTeam[teamId] = [];
+        }
+        
+        milestonesByTeam[teamId].push({
+          id: milestone.id || milestone._id.toString(),
+          name: milestone.name,
+          description: milestone.description,
+          phase: milestone.phase,
+          weight: milestone.weight,
+          dueDate: milestone.dueDate,
+          createdAt: milestone.createdAt
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      milestones: milestonesByTeam
+    });
+
+  } catch (error) {
+    console.error('Get custom milestones error:', error);
+    res.status(500).json({ message: 'Server error while fetching custom milestones' });
+  }
+});
+
+// Delete custom milestone
+app.delete('/api/faculty/custom-milestones/:milestoneId', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { milestoneId } = req.params;
+
+    const milestone = await CustomMilestone.findOneAndUpdate(
+      {
+        _id: milestoneId,
+        supervisorId: req.user.id
+      },
+      { isActive: false },
+      { new: true }
+    );
+
+    if (!milestone) {
+      return res.status(404).json({ message: 'Milestone not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Custom milestone deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete custom milestone error:', error);
+    res.status(500).json({ message: 'Server error while deleting milestone' });
+  }
+});
+
+// Update custom milestone
+app.put('/api/faculty/custom-milestones/:milestoneId', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { milestoneId } = req.params;
+    const { name, description, phase, weight, dueDate } = req.body;
+
+    const milestone = await CustomMilestone.findOneAndUpdate(
+      {
+        _id: milestoneId,
+        supervisorId: req.user.id
+      },
+      {
+        name: name.trim(),
+        description: description?.trim() || '',
+        phase,
+        weight: parseInt(weight),
+        dueDate: dueDate ? new Date(dueDate) : null
+      },
+      { new: true }
+    );
+
+    if (!milestone) {
+      return res.status(404).json({ message: 'Milestone not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Custom milestone updated successfully',
+      milestone
+    });
+
+  } catch (error) {
+    console.error('Update custom milestone error:', error);
+    res.status(500).json({ message: 'Server error while updating milestone' });
+  }
+});
+
+
+// Get supervisor's customized predefined milestones
+app.get('/api/faculty/predefined-milestones', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const customizedMilestones = await CustomPredefinedMilestone.find({
+      supervisorId: req.user.id,
+      isActive: true
+    });
+
+    // Group by phase
+    const milestonesByPhase = {};
+    customizedMilestones.forEach(milestone => {
+      if (!milestonesByPhase[milestone.phase]) {
+        milestonesByPhase[milestone.phase] = [];
+      }
+      milestonesByPhase[milestone.phase].push({
+        id: milestone.milestoneId,
+        name: milestone.name,
+        weight: milestone.weight,
+        description: milestone.description,
+        isCustomized: true
+      });
+    });
+
+    res.json({
+      success: true,
+      customizedMilestones: milestonesByPhase
+    });
+
+  } catch (error) {
+    console.error('Error fetching predefined milestones:', error);
+    res.status(500).json({ message: 'Server error while fetching predefined milestones' });
+  }
+});
+
+// Update predefined milestone
+app.put('/api/faculty/predefined-milestones/:milestoneId', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { milestoneId } = req.params;
+    const { name, weight, description, phase } = req.body;
+
+    // Validate input
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Milestone name is required' });
+    }
+
+    if (weight < 1 || weight > 100) {
+      return res.status(400).json({ message: 'Weight must be between 1 and 100' });
+    }
+
+    // Check if customization already exists
+    let customMilestone = await CustomPredefinedMilestone.findOne({
+      supervisorId: req.user.id,
+      milestoneId: milestoneId,
+      phase: phase
+    });
+
+    if (customMilestone) {
+      // Update existing customization
+      customMilestone.name = name.trim();
+      customMilestone.weight = parseInt(weight);
+      customMilestone.description = description?.trim() || '';
+      await customMilestone.save();
+    } else {
+      // Create new customization
+      customMilestone = new CustomPredefinedMilestone({
+        supervisorId: req.user.id,
+        phase: phase,
+        milestoneId: milestoneId,
+        name: name.trim(),
+        weight: parseInt(weight),
+        description: description?.trim() || ''
+      });
+      await customMilestone.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Predefined milestone updated successfully',
+      milestone: customMilestone
+    });
+
+  } catch (error) {
+    console.error('Error updating predefined milestone:', error);
+    res.status(500).json({ message: 'Server error while updating predefined milestone' });
+  }
+});
+
+// Reset predefined milestone to default
+app.delete('/api/faculty/predefined-milestones/:milestoneId/:phase', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { milestoneId, phase } = req.params;
+
+    await CustomPredefinedMilestone.findOneAndDelete({
+      supervisorId: req.user.id,
+      milestoneId: milestoneId,
+      phase: phase
+    });
+
+    res.json({
+      success: true,
+      message: 'Predefined milestone reset to default successfully'
+    });
+
+  } catch (error) {
+    console.error('Error resetting predefined milestone:', error);
+    res.status(500).json({ message: 'Server error while resetting predefined milestone' });
+  }
+});
+
+
+// ===== BOARD MANAGEMENT API ENDPOINTS =====
+
+// Get all boards (Admin)
+app.get('/api/admin/boards', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const boards = await Board.find({ isActive: true })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Calculate supervised teams for each faculty member
+    const boardsWithTeamCounts = await Promise.all(
+      boards.map(async (board) => {
+        // Get teams supervised by faculty in this board
+        const facultyIds = board.faculty.map(f => f._id);
+        const supervisedTeams = await Team.find({
+          'currentSupervisor.facultyId': { $in: facultyIds }
+        }).lean();
+
+        // Add supervised team info to faculty
+        const facultyWithTeams = await Promise.all(
+          board.faculty.map(async (faculty) => {
+            const facultyTeams = supervisedTeams.filter(
+              team => team.currentSupervisor?.facultyId?.toString() === faculty._id.toString()
+            );
+
+            return {
+              ...faculty,
+              supervisedTeams: facultyTeams.map(team => ({
+                _id: team._id,
+                name: team.name,
+                memberCount: team.memberCount || team.members?.length || 0,
+                status: team.status,
+                currentPhase: team.currentPhase || 'A'
+              }))
+            };
+          })
+        );
+
+        return {
+          ...board,
+          faculty: facultyWithTeams,
+          totalTeams: supervisedTeams.length
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      boards: boardsWithTeamCounts
+    });
+
+  } catch (error) {
+    console.error('Get boards error:', error);
+    res.status(500).json({ message: 'Server error while fetching boards' });
+  }
+});
+
+// Create new board (Admin)
+app.post('/api/admin/boards', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { name, description, faculty } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Board name is required' });
+    }
+
+    // Check if board name already exists
+    const existingBoard = await Board.findOne({ 
+      name: name.trim(), 
+      isActive: true 
+    });
+
+    if (existingBoard) {
+      return res.status(400).json({ message: 'Board with this name already exists' });
+    }
+
+    // Validate faculty members
+    const facultyMembers = [];
+    if (faculty && Array.isArray(faculty)) {
+      for (const facultyId of faculty) {
+        const facultyDoc = await Faculty.findById(facultyId);
+        if (facultyDoc) {
+          facultyMembers.push({
+            _id: facultyDoc._id,
+            name: facultyDoc.name,
+            email: facultyDoc.email,
+            department: facultyDoc.department,
+            assignedDate: new Date()
+          });
+        }
+      }
+    }
+
+    const newBoard = new Board({
+      name: name.trim(),
+      description: description?.trim() || '',
+      faculty: facultyMembers
+    });
+
+    await newBoard.save();
+
+    // Create notifications for assigned faculty
+    for (const facultyMember of facultyMembers) {
+      try {
+        const notification = new Notification({
+          recipientId: facultyMember._id,
+          recipientType: 'Faculty',
+          type: 'general',
+          title: 'Assigned to Evaluation Board',
+          message: `You have been assigned to the evaluation board "${newBoard.name}".`,
+          data: {
+            boardId: newBoard._id,
+            boardName: newBoard.name,
+            action: 'board_assignment'
+          },
+          read: false
+        });
+        await notification.save();
+      } catch (notifError) {
+        console.error('Error creating board assignment notification:', notifError);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Board created successfully',
+      board: newBoard
+    });
+
+  } catch (error) {
+    console.error('Create board error:', error);
+    res.status(500).json({ message: 'Server error while creating board' });
+  }
+});
+
+// Update board (Admin)
+app.put('/api/admin/boards/:boardId', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { boardId } = req.params;
+    const { name, description, faculty } = req.body;
+
+    const board = await Board.findById(boardId);
+    if (!board) {
+      return res.status(404).json({ message: 'Board not found' });
+    }
+
+    // Check if new name conflicts with existing boards
+    if (name && name.trim() !== board.name) {
+      const existingBoard = await Board.findOne({ 
+        name: name.trim(), 
+        isActive: true,
+        _id: { $ne: boardId }
+      });
+
+      if (existingBoard) {
+        return res.status(400).json({ message: 'Board with this name already exists' });
+      }
+    }
+
+    // Store previous faculty for comparison
+    const previousFaculty = board.faculty.map(f => f._id.toString());
+
+    // Update basic info
+    if (name) board.name = name.trim();
+    if (description !== undefined) board.description = description.trim();
+
+    // Update faculty members
+    const facultyMembers = [];
+    if (faculty && Array.isArray(faculty)) {
+      for (const facultyId of faculty) {
+        const facultyDoc = await Faculty.findById(facultyId);
+        if (facultyDoc) {
+          // Keep existing assignment date if faculty was already assigned
+          const existingFaculty = board.faculty.find(
+            f => f._id.toString() === facultyId.toString()
+          );
+          
+          facultyMembers.push({
+            _id: facultyDoc._id,
+            name: facultyDoc.name,
+            email: facultyDoc.email,
+            department: facultyDoc.department,
+            assignedDate: existingFaculty?.assignedDate || new Date()
+          });
+        }
+      }
+    }
+
+    board.faculty = facultyMembers;
+    board.updatedAt = new Date();
+
+    await board.save();
+
+    // Notify newly added faculty
+    const currentFaculty = facultyMembers.map(f => f._id.toString());
+    const newlyAdded = currentFaculty.filter(id => !previousFaculty.includes(id));
+    const removed = previousFaculty.filter(id => !currentFaculty.includes(id));
+
+    // Notify newly added faculty
+    for (const facultyId of newlyAdded) {
+      try {
+        const notification = new Notification({
+          recipientId: facultyId,
+          recipientType: 'Faculty',
+          type: 'general',
+          title: 'Assigned to Evaluation Board',
+          message: `You have been assigned to the evaluation board "${board.name}".`,
+          data: {
+            boardId: board._id,
+            boardName: board.name,
+            action: 'board_assignment'
+          },
+          read: false
+        });
+        await notification.save();
+      } catch (notifError) {
+        console.error('Error creating assignment notification:', notifError);
+      }
+    }
+
+    // Notify removed faculty
+    for (const facultyId of removed) {
+      try {
+        const notification = new Notification({
+          recipientId: facultyId,
+          recipientType: 'Faculty',
+          type: 'general',
+          title: 'Removed from Evaluation Board',
+          message: `You have been removed from the evaluation board "${board.name}".`,
+          data: {
+            boardId: board._id,
+            boardName: board.name,
+            action: 'board_removal'
+          },
+          read: false
+        });
+        await notification.save();
+      } catch (notifError) {
+        console.error('Error creating removal notification:', notifError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Board updated successfully',
+      board: board
+    });
+
+  } catch (error) {
+    console.error('Update board error:', error);
+    res.status(500).json({ message: 'Server error while updating board' });
+  }
+});
+
+// Delete board (Admin)
+app.delete('/api/admin/boards/:boardId', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { boardId } = req.params;
+
+    const board = await Board.findById(boardId);
+    if (!board) {
+      return res.status(404).json({ message: 'Board not found' });
+    }
+
+    // Notify all faculty members about board deletion
+    for (const facultyMember of board.faculty) {
+      try {
+        const notification = new Notification({
+          recipientId: facultyMember._id,
+          recipientType: 'Faculty',
+          type: 'general',
+          title: 'Evaluation Board Deleted',
+          message: `The evaluation board "${board.name}" has been deleted by administration.`,
+          data: {
+            boardName: board.name,
+            action: 'board_deletion'
+          },
+          read: false
+        });
+        await notification.save();
+      } catch (notifError) {
+        console.error('Error creating deletion notification:', notifError);
+      }
+    }
+
+    // Soft delete - mark as inactive instead of hard delete
+    board.isActive = false;
+    board.updatedAt = new Date();
+    await board.save();
+
+    res.json({
+      success: true,
+      message: 'Board deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete board error:', error);
+    res.status(500).json({ message: 'Server error while deleting board' });
+  }
+});
+
+// Get available faculty for board assignment
+app.get('/api/admin/faculty/available-for-board', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { exclude } = req.query;
+
+    // Get all active faculty
+    let availableFaculty = await Faculty.find({
+      status: 'Active'
+    }).select('_id name email department role').sort({ name: 1 });
+
+    // If excluding a specific board, don't filter out its faculty
+    if (exclude) {
+      // This allows editing existing boards without losing current faculty
+      res.json({
+        success: true,
+        faculty: availableFaculty
+      });
+    } else {
+      // For new boards, show all available faculty
+      res.json({
+        success: true,
+        faculty: availableFaculty
+      });
+    }
+
+  } catch (error) {
+    console.error('Get available faculty error:', error);
+    res.status(500).json({ message: 'Server error while fetching available faculty' });
+  }
+});
+
+// Get board statistics
+app.get('/api/admin/boards/statistics', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const totalBoards = await Board.countDocuments({ isActive: true });
+    
+    const boards = await Board.find({ isActive: true }).lean();
+    const totalFacultyAssignments = boards.reduce((sum, board) => sum + board.faculty.length, 0);
+    
+    // Count total supervised teams
+    const allFacultyIds = boards.flatMap(board => board.faculty.map(f => f._id));
+    const totalTeams = await Team.countDocuments({
+      'currentSupervisor.facultyId': { $in: allFacultyIds }
+    });
+
+    res.json({
+      success: true,
+      statistics: {
+        totalBoards,
+        totalFacultyAssignments,
+        totalTeams,
+        averageFacultyPerBoard: totalBoards > 0 ? (totalFacultyAssignments / totalBoards).toFixed(1) : 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Get board statistics error:', error);
+    res.status(500).json({ message: 'Server error while fetching board statistics' });
+  }
+});
+
+
+app.get('/api/faculty/my-boards', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const boards = await Board.find({
+      'faculty._id': req.user.id,
+      isActive: true
+    }).lean();
+
+    // Enhance boards with evaluation statistics
+    const boardsWithStats = await Promise.all(
+      boards.map(async (board) => {
+        // Count total evaluations and pending evaluations
+        const totalEvaluations = await BoardEvaluation.countDocuments({
+          boardId: board._id
+        });
+        
+        const pendingEvaluations = await BoardEvaluation.countDocuments({
+          boardId: board._id,
+          'evaluations': {
+            $not: {
+              $elemMatch: {
+                facultyId: req.user.id,
+                isSubmitted: true
+              }
+            }
+          }
+        });
+
+        // Find faculty member info in this board
+        const facultyMember = board.faculty.find(f => f._id.toString() === req.user.id);
+
+        return {
+          ...board,
+          totalEvaluations,
+          pendingEvaluations,
+          facultyRole: facultyMember?.role || 'Member',
+          assignedDate: facultyMember?.assignedDate
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      boards: boardsWithStats,
+      totalBoards: boardsWithStats.length
+    });
+
+  } catch (error) {
+    console.error('Get faculty boards error:', error);
+    res.status(500).json({ message: 'Server error while fetching boards' });
+  }
+});
+
+// Get teams for evaluation by board and phase
+app.get('/api/faculty/boards/:boardId/teams/:phase', authenticate, async (req, res) => {
+  try {
+    const { boardId, phase } = req.params;
+    
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Verify faculty is member of this board
+    const board = await Board.findOne({
+      _id: boardId,
+      'faculty._id': req.user.id,
+      isActive: true
+    });
+
+    if (!board) {
+      return res.status(403).json({ message: 'You are not a member of this board' });
+    }
+
+    // Get teams in the specified phase that need evaluation
+    // For now, get all teams supervised by board faculty in the specified phase
+    const boardFacultyIds = board.faculty.map(f => f._id);
+    
+    const teams = await Team.find({
+      currentPhase: phase,
+      'currentSupervisor.facultyId': { $in: boardFacultyIds }
+    }).lean();
+
+    // Get detailed team member information
+    const teamsWithDetails = await Promise.all(
+      teams.map(async (team) => {
+        const memberStudentIds = team.members.map(member => member.studentId);
+        const studentsWithDetails = await Student.find({
+          studentId: { $in: memberStudentIds }
+        }).select('studentId name email program avatar');
+
+        const studentDetailsMap = new Map(
+          studentsWithDetails.map(student => [student.studentId, student])
+        );
+
+        const enhancedMembers = team.members.map(member => {
+          const studentDetails = studentDetailsMap.get(member.studentId);
+          return {
+            ...member,
+            email: studentDetails?.email || 'Not available',
+            program: studentDetails?.program || 'Not specified',
+            avatar: studentDetails?.avatar || null
+          };
+        });
+
+        // Check if this faculty has already evaluated this team
+        const existingEvaluation = await BoardEvaluation.findOne({
+          boardId: boardId,
+          teamId: team._id,
+          phase: phase,
+          'evaluations.facultyId': req.user.id,
+          'evaluations.isSubmitted': true
+        });
+
+        // Check if faculty is supervisor of this team
+        const isSupervisor = team.currentSupervisor?.facultyId?.toString() === req.user.id;
+
+        return {
+          ...team,
+          members: enhancedMembers,
+          evaluationStatus: existingEvaluation ? 'completed' : 'pending',
+          isSupervisor: isSupervisor,
+          existingEvaluation: existingEvaluation ? 
+            existingEvaluation.evaluations.find(eval => 
+              eval.facultyId.toString() === req.user.id
+            ) : null
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      board: {
+        _id: board._id,
+        name: board.name,
+        description: board.description
+      },
+      teams: teamsWithDetails,
+      phase: phase,
+      facultyRole: board.faculty.find(f => f._id.toString() === req.user.id)?.role || 'Member'
+    });
+
+  } catch (error) {
+    console.error('Get board teams error:', error);
+    res.status(500).json({ message: 'Server error while fetching teams' });
+  }
+});
+
+
+app.post('/api/faculty/boards/:boardId/teams/:teamId/evaluate', authenticate, async (req, res) => {
+  try {
+    const { boardId, teamId } = req.params;
+    const { 
+      phase, 
+      evaluationType, 
+      teamMark, 
+      teamFeedback, 
+      individualMarks 
+    } = req.body;
+
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Verify faculty is member of this board
+    const board = await Board.findById(boardId);
+    const facultyMember = board.faculty.find(f => f._id.toString() === req.user.id);
+    
+    if (!facultyMember) {
+      return res.status(403).json({ message: 'You are not a member of this board' });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    const faculty = await Faculty.findById(req.user.id);
+    
+    // Check if faculty is supervisor of this team
+    const isSupervisor = team.currentSupervisor?.facultyId?.toString() === req.user.id;
+
+    // Validation
+    if (evaluationType === 'team') {
+      if (!teamMark || teamMark < 0 || teamMark > 100) {
+        return res.status(400).json({ message: 'Valid team mark (0-100) is required' });
+      }
+    } else if (evaluationType === 'individual') {
+      if (!individualMarks || !Array.isArray(individualMarks) || individualMarks.length === 0) {
+        return res.status(400).json({ message: 'Individual marks are required' });
+      }
+      
+      // Validate individual marks
+      for (const mark of individualMarks) {
+        if (!mark.studentId || !mark.studentName || 
+            typeof mark.mark !== 'number' || mark.mark < 0 || mark.mark > 100) {
+          return res.status(400).json({ 
+            message: 'All individual marks must be between 0-100' 
+          });
+        }
+      }
+    } else {
+      return res.status(400).json({ message: 'Invalid evaluation type' });
+    }
+
+    // Find or create board evaluation record
+    let boardEvaluation = await BoardEvaluation.findOne({
+      boardId,
+      teamId,
+      phase
+    });
+
+    if (!boardEvaluation) {
+      boardEvaluation = new BoardEvaluation({
+        boardId,
+        teamId,
+        phase,
+        evaluations: [],
+        totalEvaluators: board.faculty.length,
+        status: 'in_progress' // Add default status
+      });
+    }
+
+    // Remove existing evaluation from this faculty (if updating)
+    boardEvaluation.evaluations = boardEvaluation.evaluations.filter(
+      eval => eval.facultyId.toString() !== req.user.id
+    );
+
+    // Create new evaluation
+    const newEvaluation = {
+      facultyId: req.user.id,
+      facultyName: faculty.name,
+      isSupervisor: isSupervisor,
+      evaluationType: evaluationType,
+      submittedAt: new Date(),
+      isSubmitted: true,
+      lastModified: new Date()
+    };
+
+    if (evaluationType === 'team') {
+      newEvaluation.teamMark = teamMark;
+      newEvaluation.teamFeedback = teamFeedback || '';
+    } else {
+      newEvaluation.individualMarks = individualMarks.map(mark => ({
+        studentId: mark.studentId,
+        studentName: mark.studentName,
+        mark: mark.mark,
+        feedback: mark.feedback || ''
+      }));
+    }
+
+    boardEvaluation.evaluations.push(newEvaluation);
+    boardEvaluation.submittedEvaluations = boardEvaluation.evaluations.filter(
+      eval => eval.isSubmitted
+    ).length;
+
+    // Check if all faculty evaluations are complete
+    if (boardEvaluation.submittedEvaluations === boardEvaluation.totalEvaluators) {
+      // Calculate faculty results (before admin review)
+      boardEvaluation.facultyResults = calculateFinalEvaluationResults(
+        boardEvaluation, 
+        team.members
+      );
+      
+      // Set status to pending admin review instead of completed
+      boardEvaluation.status = 'pending_admin_review';
+      boardEvaluation.isCompleted = true;
+      boardEvaluation.completedAt = new Date();
+
+      // Create notification for admin
+      try {
+        const notification = new Notification({
+          recipientId: null, // For admin notifications
+          recipientType: 'Admin',
+          type: 'evaluation_review',
+          title: 'Board Evaluation Ready for Review',
+          message: `Team "${team.name}" Phase ${phase} evaluation is complete and ready for admin review.`,
+          data: {
+            teamId: team._id,
+            teamName: team.name,
+            boardId: boardId,
+            phase: phase,
+            action: 'evaluation_review_needed'
+          },
+          read: false
+        });
+        await notification.save();
+      } catch (notifError) {
+        console.error('Error creating admin notification:', notifError);
+      }
+    }
+
+    await boardEvaluation.save();
+
+    res.json({
+      success: true,
+      message: boardEvaluation.status === 'pending_admin_review' 
+        ? 'Evaluation submitted! All faculty evaluations complete. Sent to admin for review.' 
+        : 'Evaluation submitted successfully!',
+      evaluation: boardEvaluation,
+      isCompleted: boardEvaluation.isCompleted,
+      facultyEvaluation: newEvaluation,
+      status: boardEvaluation.status || 'in_progress',
+      facultyResults: boardEvaluation.facultyResults // Include faculty results for admin review
+    });
+
+  } catch (error) {
+    console.error('Submit evaluation error:', error);
+    res.status(500).json({ message: 'Server error while submitting evaluation' });
+  }
+});
+
+
+
+app.get('/api/faculty/boards/:boardId/teams/:teamId/evaluation/:phase', authenticate, async (req, res) => {
+  try {
+    const { boardId, teamId, phase } = req.params;
+
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Verify faculty is member of this board
+    const board = await Board.findOne({
+      _id: boardId,
+      'faculty._id': req.user.id
+    });
+
+    if (!board) {
+      return res.status(403).json({ message: 'You are not a member of this board' });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    const boardEvaluation = await BoardEvaluation.findOne({
+      boardId,
+      teamId,
+      phase
+    });
+
+    let facultyEvaluation = null;
+    if (boardEvaluation) {
+      facultyEvaluation = boardEvaluation.evaluations.find(
+        eval => eval.facultyId.toString() === req.user.id
+      );
+    }
+
+    res.json({
+      success: true,
+      team: team,
+      board: board,
+      evaluation: boardEvaluation,
+      facultyEvaluation: facultyEvaluation,
+      hasEvaluated: !!facultyEvaluation?.isSubmitted,
+      isSupervisor: team.currentSupervisor?.facultyId?.toString() === req.user.id
+    });
+
+  } catch (error) {
+    console.error('Get evaluation details error:', error);
+    res.status(500).json({ message: 'Server error while fetching evaluation details' });
+  }
+});
+// Submit evaluation
+app.post('/api/faculty/boards/:boardId/evaluate', authenticate, async (req, res) => {
+  try {
+    const { boardId } = req.params;
+    const { teamId, phase, evaluationType, teamMark, teamFeedback, individualMarks } = req.body;
+
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Verify faculty is member of this board
+    const board = await Board.findById(boardId);
+    const facultyMember = board.faculty.find(f => f._id.toString() === req.user.id);
+    
+    if (!facultyMember) {
+      return res.status(403).json({ message: 'You are not a member of this board' });
+    }
+
+    const faculty = await Faculty.findById(req.user.id);
+
+    // Find or create board evaluation record
+    let boardEvaluation = await BoardEvaluation.findOne({
+      boardId,
+      teamId,
+      phase
+    });
+
+    if (!boardEvaluation) {
+      boardEvaluation = new BoardEvaluation({
+        boardId,
+        teamId,
+        phase,
+        evaluations: []
+      });
+    }
+
+    // Remove existing evaluation from this faculty
+    boardEvaluation.evaluations = boardEvaluation.evaluations.filter(
+      eval => eval.facultyId.toString() !== req.user.id
+    );
+
+    // Add new evaluation
+    const newEvaluation = {
+      facultyId: req.user.id,
+      facultyName: faculty.name,
+      evaluationType,
+      submittedAt: new Date(),
+      isSubmitted: true
+    };
+
+    if (evaluationType === 'team') {
+      newEvaluation.teamMark = teamMark;
+      newEvaluation.teamFeedback = teamFeedback;
+    } else {
+      newEvaluation.individualMarks = individualMarks;
+    }
+
+    boardEvaluation.evaluations.push(newEvaluation);
+
+    // Calculate final results if all evaluations are complete
+    const totalFaculty = board.faculty.length;
+    const submittedEvaluations = boardEvaluation.evaluations.length;
+
+    if (submittedEvaluations === totalFaculty) {
+      boardEvaluation.finalResults = calculateFinalResults(boardEvaluation);
+      boardEvaluation.isCompleted = true;
+      boardEvaluation.completedAt = new Date();
+    }
+
+    await boardEvaluation.save();
+
+    res.json({
+      success: true,
+      message: 'Evaluation submitted successfully',
+      evaluation: boardEvaluation,
+      isCompleted: boardEvaluation.isCompleted
+    });
+
+  } catch (error) {
+    console.error('Submit evaluation error:', error);
+    res.status(500).json({ message: 'Server error while submitting evaluation' });
+  }
+});
+
+// Get detailed evaluation results for supervisor
+app.get('/api/faculty/boards/:boardId/teams/:teamId/detailed-evaluation/:phase', authenticate, async (req, res) => {
+  try {
+    const { boardId, teamId, phase } = req.params;
+
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Get team and verify supervisor
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Verify faculty is the supervisor of this team
+    if (!team.currentSupervisor || team.currentSupervisor.facultyId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'You are not the supervisor of this team' });
+    }
+
+    // Get board evaluation
+    const boardEvaluation = await BoardEvaluation.findOne({
+      boardId,
+      teamId,
+      phase
+    }).populate('boardId', 'name faculty');
+
+    if (!boardEvaluation) {
+      return res.status(404).json({ 
+        message: 'No evaluation found for this team in the specified phase' 
+      });
+    }
+
+    // Get detailed student information
+    const memberStudentIds = team.members.map(member => member.studentId);
+    const studentsWithDetails = await Student.find({
+      studentId: { $in: memberStudentIds }
+    }).select('studentId name email program avatar');
+
+    const studentDetailsMap = new Map(
+      studentsWithDetails.map(student => [student.studentId, student])
+    );
+
+    // Enhance team members with student details
+    const enhancedMembers = team.members.map(member => {
+      const studentDetails = studentDetailsMap.get(member.studentId);
+      return {
+        ...member,
+        email: studentDetails?.email || 'Not available',
+        program: studentDetails?.program || 'Not specified',
+        avatar: studentDetails?.avatar || null
+      };
+    });
+
+    // Enhanced evaluations with faculty details
+    const evaluationsWithDetails = await Promise.all(
+      boardEvaluation.evaluations.map(async (evaluation) => {
+        const faculty = await Faculty.findById(evaluation.facultyId).select('name email department');
+        
+        return {
+          ...evaluation.toObject(),
+          facultyDetails: {
+            name: faculty?.name || evaluation.facultyName,
+            email: faculty?.email || 'Not available',
+            department: faculty?.department || 'Not specified'
+          }
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      team: {
+        ...team.toObject(),
+        members: enhancedMembers
+      },
+      board: boardEvaluation.boardId,
+      evaluation: {
+        ...boardEvaluation.toObject(),
+        evaluations: evaluationsWithDetails
+      },
+      phase: phase,
+      isCompleted: boardEvaluation.isCompleted,
+      totalEvaluators: boardEvaluation.totalEvaluators || 0,
+      submittedEvaluations: boardEvaluation.submittedEvaluations || 0,
+      finalResults: boardEvaluation.finalResults || null
+    });
+
+  } catch (error) {
+    console.error('Get detailed evaluation error:', error);
+    res.status(500).json({ message: 'Server error while fetching detailed evaluation' });
+  }
+});
+
+// Get supervisor's teams with evaluation status
+app.get('/api/faculty/supervisor-teams-evaluations', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Get teams where this faculty is the supervisor
+    const supervisedTeams = await Team.find({
+      'currentSupervisor.facultyId': req.user.id
+    }).lean();
+
+    // Get evaluation status for each team
+    const teamsWithEvaluations = await Promise.all(
+      supervisedTeams.map(async (team) => {
+        // Get board evaluations for this team
+        const evaluations = await BoardEvaluation.find({
+          teamId: team._id
+        }).populate('boardId', 'name');
+
+        // Get evaluation status by phase
+        const evaluationStatus = {};
+        for (const phase of ['A', 'B', 'C']) {
+          const phaseEvaluation = evaluations.find(eval => eval.phase === phase);
+          evaluationStatus[phase] = {
+            exists: !!phaseEvaluation,
+            isCompleted: phaseEvaluation?.isCompleted || false,
+            submittedEvaluations: phaseEvaluation?.submittedEvaluations || 0,
+            totalEvaluators: phaseEvaluation?.totalEvaluators || 0,
+            boardId: phaseEvaluation?.boardId?._id || null,
+            boardName: phaseEvaluation?.boardId?.name || null
+          };
+        }
+
+        return {
+          ...team,
+          evaluationStatus
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      teams: teamsWithEvaluations
+    });
+
+  } catch (error) {
+    console.error('Get supervisor teams evaluations error:', error);
+    res.status(500).json({ message: 'Server error while fetching supervisor teams evaluations' });
+  }
+});
+
+
+
+// NEW: Get evaluations pending admin review
+app.get('/api/admin/evaluations/pending-review', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const pendingEvaluations = await BoardEvaluation.find({
+      status: 'pending_admin_review'
+    })
+    .populate('boardId', 'name')
+    .populate('teamId', 'name members')
+    .sort({ completedAt: -1 });
+
+    const evaluationsWithDetails = await Promise.all(
+      pendingEvaluations.map(async (evaluation) => {
+        const team = await Team.findById(evaluation.teamId);
+        return {
+          ...evaluation.toObject(),
+          teamDetails: team
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      evaluations: evaluationsWithDetails
+    });
+
+  } catch (error) {
+    console.error('Get pending evaluations error:', error);
+    res.status(500).json({ message: 'Server error while fetching pending evaluations' });
+  }
+});
+
+// NEW: Get specific evaluation for admin review
+app.get('/api/admin/evaluations/:evaluationId', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const evaluation = await BoardEvaluation.findById(req.params.evaluationId)
+      .populate('boardId', 'name faculty')
+      .populate('teamId', 'name members');
+
+    if (!evaluation) {
+      return res.status(404).json({ message: 'Evaluation not found' });
+    }
+
+    res.json({
+      success: true,
+      evaluation: evaluation
+    });
+
+  } catch (error) {
+    console.error('Get evaluation details error:', error);
+    res.status(500).json({ message: 'Server error while fetching evaluation details' });
+  }
+});
+
+// NEW: Admin update evaluation grades
+app.put('/api/admin/evaluations/:evaluationId/review', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { 
+      modifiedGrades, 
+      adminComments, 
+      action // 'save_draft' or 'finalize'
+    } = req.body;
+
+    const evaluation = await BoardEvaluation.findById(req.params.evaluationId);
+    if (!evaluation) {
+      return res.status(404).json({ message: 'Evaluation not found' });
+    }
+
+    // Update admin review data
+    evaluation.adminReview = {
+      ...evaluation.adminReview,
+      isReviewed: true,
+      reviewedBy: req.user.id,
+      reviewedAt: new Date(),
+      adminComments: adminComments || evaluation.adminReview.adminComments
+    };
+
+    // Process modified grades
+    if (modifiedGrades && Array.isArray(modifiedGrades)) {
+      evaluation.adminReview.modifiedGrades = modifiedGrades.map(grade => ({
+        studentId: grade.studentId,
+        studentName: grade.studentName,
+        originalMark: grade.originalMark,
+        modifiedMark: grade.modifiedMark,
+        modificationReason: grade.modificationReason,
+        modifiedAt: new Date()
+      }));
+    }
+
+    // Calculate final results with admin modifications
+    const finalResults = calculateFinalResultsWithAdminModifications(
+      evaluation.facultyResults,
+      evaluation.adminReview.modifiedGrades
+    );
+    evaluation.finalResults = finalResults;
+
+    if (action === 'finalize') {
+      evaluation.adminReview.isFinalized = true;
+      evaluation.adminReview.finalizedAt = new Date();
+      evaluation.status = 'finalized';
+
+      // Send grades to students
+      await sendGradesToStudents(evaluation);
+    } else {
+      evaluation.status = 'admin_reviewed';
+    }
+
+    await evaluation.save();
+
+    res.json({
+      success: true,
+      message: action === 'finalize' 
+        ? 'Evaluation finalized and grades sent to students!' 
+        : 'Evaluation review saved successfully!',
+      evaluation: evaluation
+    });
+
+  } catch (error) {
+    console.error('Admin review evaluation error:', error);
+    res.status(500).json({ message: 'Server error while reviewing evaluation' });
+  }
+});
+
+// Helper function to calculate final results with admin modifications
+function calculateFinalResultsWithAdminModifications(facultyResults, modifiedGrades) {
+  if (!facultyResults || !facultyResults.individualResults) {
+    return facultyResults;
+  }
+
+  const modifiedGradeMap = new Map();
+  if (modifiedGrades) {
+    modifiedGrades.forEach(grade => {
+      modifiedGradeMap.set(grade.studentId, grade);
+    });
+  }
+
+  const updatedResults = facultyResults.individualResults.map(result => {
+    const modification = modifiedGradeMap.get(result.studentId);
+    
+    if (modification) {
+      const gradeInfo = convertToGrade(modification.modifiedMark);
+      return {
+        ...result,
+        finalMark: modification.modifiedMark,
+        grade: gradeInfo.letter,
+        gpa: gradeInfo.gpa,
+        isModified: true,
+        modificationReason: modification.modificationReason,
+        breakdown: {
+          ...result.breakdown,
+          adminAdjustment: modification.modifiedMark - modification.originalMark,
+          finalCalculation: `Original: ${modification.originalMark}%, Admin Modified: ${modification.modifiedMark}% - ${modification.modificationReason}`
+        }
+      };
+    }
+    
+    return {
+      ...result,
+      isModified: false
+    };
+  });
+
+  // Recalculate team average
+  const teamAverage = updatedResults.reduce((sum, result) => sum + result.finalMark, 0) / updatedResults.length;
+  const teamGrade = convertToGrade(teamAverage);
+
+  return {
+    ...facultyResults,
+    teamAverage: parseFloat(teamAverage.toFixed(2)),
+    teamGrade: teamGrade.letter,
+    teamGPA: teamGrade.gpa,
+    individualResults: updatedResults
+  };
+}
+
+// Helper function to send grades to students
+async function sendGradesToStudents(evaluation) {
+  try {
+    const team = await Team.findById(evaluation.teamId);
+    if (!team || !evaluation.finalResults) return;
+
+    // Get all team member student IDs
+    const memberStudentIds = team.members.map(member => member.studentId);
+    const students = await Student.find({
+      studentId: { $in: memberStudentIds }
+    });
+
+    // Send notification to each student
+    for (const student of students) {
+      const studentResult = evaluation.finalResults.individualResults.find(
+        result => result.studentId === student.studentId
+      );
+
+      if (studentResult) {
+        const notification = new Notification({
+          recipientId: student._id,
+          recipientType: 'Student',
+          type: 'grade_released',
+          title: 'Final Grade Released',
+          message: `Your Phase ${evaluation.phase} evaluation grade has been finalized: ${studentResult.grade} (${studentResult.finalMark}%)`,
+          data: {
+            teamId: team._id,
+            teamName: team.name,
+            phase: evaluation.phase,
+            finalMark: studentResult.finalMark,
+            grade: studentResult.grade,
+            gpa: studentResult.gpa,
+            isModified: studentResult.isModified || false,
+            modificationReason: studentResult.modificationReason || null,
+            action: 'grade_finalized'
+          },
+          read: false
+        });
+        await notification.save();
+      }
+    }
+
+    console.log(`✅ Grades sent to ${students.length} students for team ${team.name} Phase ${evaluation.phase}`);
+  } catch (error) {
+    console.error('Error sending grades to students:', error);
+  }
+}
+
+// In your server.js, add these missing endpoints:
+
+// Get teams available for evaluation
+app.get('/api/admin/teams/for-evaluation', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const teams = await Team.find({
+      'currentSupervisor.facultyId': { $exists: true },
+      status: 'active'
+    }).select('_id name members currentPhase status');
+
+    res.json({
+      success: true,
+      teams
+    });
+  } catch (error) {
+    console.error('Error fetching teams for evaluation:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Assign teams to board for evaluation
+app.post('/api/admin/boards/:boardId/assign-teams', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { boardId } = req.params;
+    const { teamIds, phase } = req.body;
+
+    const board = await Board.findById(boardId);
+    if (!board) {
+      return res.status(404).json({ message: 'Board not found' });
+    }
+
+    // Create board evaluations for each team
+    for (const teamId of teamIds) {
+      const existingEvaluation = await BoardEvaluation.findOne({
+        boardId,
+        teamId,
+        phase
+      });
+
+      if (!existingEvaluation) {
+        const newEvaluation = new BoardEvaluation({
+          boardId,
+          teamId,
+          phase,
+          evaluations: [],
+          totalEvaluators: board.faculty.length,
+          status: 'in_progress'
+        });
+        await newEvaluation.save();
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${teamIds.length} teams assigned to board for Phase ${phase} evaluation`
+    });
+
+  } catch (error) {
+    console.error('Error assigning teams to board:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get evaluation statistics
+app.get('/api/admin/evaluations/stats', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const stats = {
+      total: await BoardEvaluation.countDocuments(),
+      pending: await BoardEvaluation.countDocuments({ status: 'in_progress' }),
+      pendingReview: await BoardEvaluation.countDocuments({ status: 'pending_admin_review' }),
+      reviewed: await BoardEvaluation.countDocuments({ status: 'admin_reviewed' }),
+      finalized: await BoardEvaluation.countDocuments({ status: 'finalized' })
+    };
+
+    res.json({
+      success: true,
+      stats
+    });
+  } catch (error) {
+    console.error('Error fetching evaluation stats:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 
 
 app.use(cors(corsOptions));
@@ -7064,4 +11837,6 @@ server.listen(PORT, async () => {
   startAutoGroupChecker(); // ✅ Add this line
   // Call this on server startup
 updateTeamSchema();
+cleanupOrphanedSupervisionRequests();
+await cleanupOrphanedTeamRequests();
 });
