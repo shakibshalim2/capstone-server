@@ -81,28 +81,6 @@ const io = socketIo(server, {
     methods: ["GET", "POST"]
   }
 });
-// Store user socket connections
-
-io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-
-  // Handle user joining
-  socket.on('user-joined', (userData) => {
-    userSockets.set(userData.userId, socket.id);
-    socket.userId = userData.userId;
-    socket.userName = userData.userName;
-  });
-
-  socket.on('disconnect', () => {
-    for (let [userId, socketId] of userSockets.entries()) {
-      if (socketId === socket.id) {
-        userSockets.delete(userId);
-        console.log(`User ${userId} disconnected`);
-        break;
-      }
-    }
-  });
-});
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
@@ -112,46 +90,54 @@ io.on('connection', (socket) => {
   // Handle joining meeting
 // Backend handles room-based signaling
 socket.on('join-meeting', (data) => {
-    const { meetingId, userId, userName, teamId } = data;
-    
-    // Join the socket room
-    socket.join(meetingId);
-    
-    // Initialize meeting if it doesn't exist
-    if (!activeMeetings.has(meetingId)) {
-      activeMeetings.set(meetingId, {
-        participants: new Map(),
-        teamId: teamId,
-        startTime: new Date()
-      });
-    }
-
-    const meeting = activeMeetings.get(meetingId);
-    
-    // Get existing participants before adding new one
-    const existingParticipants = Array.from(meeting.participants.values());
-
-    meeting.participants.set(userId, {
-      userId,
-      userName,
-      socketId: socket.id,
-      joinedAt: new Date()
+  const { meetingId, userId, userName, teamId } = data;
+  
+  console.log(`${userName} joining meeting ${meetingId}`);
+  
+  // Join the socket room
+  socket.join(meetingId);
+  
+  // Initialize meeting if it doesn't exist
+  if (!activeMeetings.has(meetingId)) {
+    activeMeetings.set(meetingId, {
+      participants: new Map(),
+      teamId: teamId,
+      startTime: new Date()
     });
-    
-    console.log(`User ${userName} joined meeting ${meetingId}. Total participants: ${meeting.participants.size}`);
-    
-    // Send existing participants to the new user
-    socket.emit('existing-participants', existingParticipants);
-    
-    // Notify existing participants about new user
-    socket.to(meetingId).emit('user-joined-meeting', {
-      userId, 
-      userName, 
-      socketId: socket.id,
-      totalParticipants: meeting.participants.size
-    });
+  }
+
+  const meeting = activeMeetings.get(meetingId);
+  
+  // Get existing participants before adding new one
+  const existingParticipants = Array.from(meeting.participants.values());
+
+  // Add new participant
+  meeting.participants.set(userId, {
+    userId,
+    userName,
+    socketId: socket.id,
+    joinedAt: new Date()
   });
   
+  console.log(`User ${userName} joined meeting ${meetingId}. Total participants: ${meeting.participants.size}`);
+  
+  // Send existing participants to the new user
+  socket.emit('existing-participants', existingParticipants);
+  
+  // Notify existing participants about new user
+  socket.to(meetingId).emit('user-joined-meeting', {
+    userId, 
+    userName, 
+    socketId: socket.id,
+    totalParticipants: meeting.participants.size
+  });
+
+  // Store user info in socket for cleanup
+  socket.userId = userId;
+  socket.userName = userName;
+  socket.meetingId = meetingId;
+});
+
 // Creates peer connections with all existing participants
 newSocket.on('existing-participants', async (participants) => {
   for (const participant of participants) {
@@ -182,40 +168,42 @@ newSocket.on('existing-participants', async (participants) => {
   });
 
   // Handle leaving meeting
-  socket.on('leave-meeting', (data) => {
-    const { meetingId, userId, teamId } = data;
+ socket.on('leave-meeting', (data) => {
+  const { meetingId, userId, teamId } = data;
+  
+  console.log(`${socket.userName} leaving meeting ${meetingId}`);
+  
+  socket.leave(meetingId);
+  
+  if (activeMeetings.has(meetingId)) {
+    const meeting = activeMeetings.get(meetingId);
+    meeting.participants.delete(userId);
     
-    socket.leave(meetingId);
+    // Notify other participants with socketId for cleanup
+    socket.to(meetingId).emit('user-left-meeting', { 
+      userId,
+      socketId: socket.id,
+      totalParticipants: meeting.participants.size 
+    });
     
-    // Update active team meeting participants
-    const meetingInfo = activeTeamMeetings.get(teamId);
-    if (meetingInfo) {
-      meetingInfo.participants.delete(userId);
-      
-      // If no participants left, remove the team meeting
-      if (meetingInfo.participants.size === 0) {
-        activeTeamMeetings.delete(teamId);
-        console.log(`Team meeting for team ${teamId} ended - no participants remaining`);
-      }
+    // Clean up empty meetings
+    if (meeting.participants.size === 0) {
+      activeMeetings.delete(meetingId);
+      console.log(`Meeting ${meetingId} deleted - no participants remaining`);
     }
+  }
+
+  // Update active team meetings
+  const meetingInfo = activeTeamMeetings.get(teamId);
+  if (meetingInfo) {
+    meetingInfo.participants.delete(userId);
     
-    if (activeMeetings.has(meetingId)) {
-      const meeting = activeMeetings.get(meetingId);
-      meeting.participants.delete(userId);
-      
-      // Notify other participants
-      socket.to(meetingId).emit('user-left-meeting', { 
-        userId,
-        totalParticipants: meeting.participants.size 
-      });
-      
-      // Clean up empty meetings
-      if (meeting.participants.size === 0) {
-        activeMeetings.delete(meetingId);
-        console.log(`Meeting ${meetingId} deleted - no participants remaining`);
-      }
+    if (meetingInfo.participants.size === 0) {
+      activeTeamMeetings.delete(teamId);
+      console.log(`Team meeting for team ${teamId} ended - no participants remaining`);
     }
-  });
+  }
+});
 
   // Handle disconnect
   socket.on('disconnect', () => {
