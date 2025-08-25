@@ -5,6 +5,8 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const saltRounds = 10;
+
+const activeMeetings = new Map();
 const userSockets = new Map();
 
 
@@ -79,9 +81,13 @@ const io = socketIo(server, {
 // Store user socket connections
 
 io.on('connection', (socket) => {
-  socket.on('join', (userId) => {
-    userSockets.set(userId, socket.id);
-    console.log(`User ${userId} connected with socket ${socket.id}`);
+  console.log('User connected:', socket.id);
+
+  // Handle user joining
+  socket.on('user-joined', (userData) => {
+    userSockets.set(userData.userId, socket.id);
+    socket.userId = userData.userId;
+    socket.userName = userData.userName;
   });
 
   socket.on('disconnect', () => {
@@ -109,19 +115,46 @@ io.on('connection', (socket) => {
   // Handle joining meeting
 // Backend handles room-based signaling
 socket.on('join-meeting', (data) => {
-  const { meetingId, userId, userName, teamId } = data;
-  socket.join(meetingId);  // Users join the same room
-  
-  // Notify existing participants about new user
-  socket.to(meetingId).emit('user-joined-meeting', {
-    userId, userName, socketId: socket.id
+    const { meetingId, userId, userName, teamId } = data;
+    
+    // Join the socket room
+    socket.join(meetingId);
+    
+    // Initialize meeting if it doesn't exist
+    if (!activeMeetings.has(meetingId)) {
+      activeMeetings.set(meetingId, {
+        participants: new Map(),
+        teamId: teamId,
+        startTime: new Date()
+      });
+    }
+
+    const meeting = activeMeetings.get(meetingId);
+    
+    // Get existing participants before adding new one
+    const existingParticipants = Array.from(meeting.participants.values());
+
+    meeting.participants.set(userId, {
+      userId,
+      userName,
+      socketId: socket.id,
+      joinedAt: new Date()
+    });
+    
+    console.log(`User ${userName} joined meeting ${meetingId}. Total participants: ${meeting.participants.size}`);
+    
+    // Send existing participants to the new user
+    socket.emit('existing-participants', existingParticipants);
+    
+    // Notify existing participants about new user
+    socket.to(meetingId).emit('user-joined-meeting', {
+      userId, 
+      userName, 
+      socketId: socket.id,
+      totalParticipants: meeting.participants.size
+    });
   });
   
-  // Send existing participants to new user
-  socket.emit('existing-participants', existingParticipants);
-});
-
-
 // Creates peer connections with all existing participants
 newSocket.on('existing-participants', async (participants) => {
   for (const participant of participants) {
@@ -162,11 +195,15 @@ newSocket.on('existing-participants', async (participants) => {
       meeting.participants.delete(userId);
       
       // Notify other participants
-      socket.to(meetingId).emit('user-left-meeting', { userId });
+      socket.to(meetingId).emit('user-left-meeting', { 
+        userId,
+        totalParticipants: meeting.participants.size 
+      });
       
       // Clean up empty meetings
       if (meeting.participants.size === 0) {
         activeMeetings.delete(meetingId);
+        console.log(`Meeting ${meetingId} deleted - no participants remaining`);
       }
     }
   });
@@ -182,8 +219,11 @@ newSocket.on('existing-participants', async (participants) => {
       for (const [meetingId, meeting] of activeMeetings.entries()) {
         if (meeting.participants.has(socket.userId)) {
           meeting.participants.delete(socket.userId);
-          socket.to(meetingId).emit('user-left-meeting', { 
-            userId: socket.userId 
+          
+          // Notify remaining participants
+          io.to(meetingId).emit('user-left-meeting', { 
+            userId: socket.userId,
+            totalParticipants: meeting.participants.size
           });
           
           if (meeting.participants.size === 0) {
