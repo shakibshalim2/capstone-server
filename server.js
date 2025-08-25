@@ -33,6 +33,8 @@ app.use(express.json({ limit: '10mb' }));
 // Create HTTP server
 const server = http.createServer(app);
 
+const activeTeamMeetings = new Map();
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -72,6 +74,7 @@ const upload = multer({
 
 
 
+
 const io = socketIo(server, {
   cors: {
     origin: process.env.REACT_APP_CLIENT_URL || "http://localhost:3000",
@@ -105,12 +108,6 @@ io.on('connection', (socket) => {
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
-  // Handle user joining
-  socket.on('user-joined', (userData) => {
-    userSockets.set(userData.userId, socket.id);
-    socket.userId = userData.userId;
-    socket.userName = userData.userName;
-  });
 
   // Handle joining meeting
 // Backend handles room-based signaling
@@ -186,9 +183,21 @@ newSocket.on('existing-participants', async (participants) => {
 
   // Handle leaving meeting
   socket.on('leave-meeting', (data) => {
-    const { meetingId, userId } = data;
+    const { meetingId, userId, teamId } = data;
     
     socket.leave(meetingId);
+    
+    // Update active team meeting participants
+    const meetingInfo = activeTeamMeetings.get(teamId);
+    if (meetingInfo) {
+      meetingInfo.participants.delete(userId);
+      
+      // If no participants left, remove the team meeting
+      if (meetingInfo.participants.size === 0) {
+        activeTeamMeetings.delete(teamId);
+        console.log(`Team meeting for team ${teamId} ended - no participants remaining`);
+      }
+    }
     
     if (activeMeetings.has(meetingId)) {
       const meeting = activeMeetings.get(meetingId);
@@ -214,6 +223,18 @@ newSocket.on('existing-participants', async (participants) => {
     
     if (socket.userId) {
       userSockets.delete(socket.userId);
+      
+      // Remove from all meetings and team meetings
+      for (const [teamId, meetingInfo] of activeTeamMeetings.entries()) {
+        if (meetingInfo.participants.has(socket.userId)) {
+          meetingInfo.participants.delete(socket.userId);
+          
+          if (meetingInfo.participants.size === 0) {
+            activeTeamMeetings.delete(teamId);
+            console.log(`Team meeting for team ${teamId} ended - all participants disconnected`);
+          }
+        }
+      }
       
       // Remove from all meetings
       for (const [meetingId, meeting] of activeMeetings.entries()) {
@@ -12933,7 +12954,36 @@ app.post('/api/teams/:teamId/start-meeting', authenticate, async (req, res) => {
       return res.status(403).json({ message: 'Not authorized' });
     }
     
-    const meetingId = `meeting_${teamId}_${Date.now()}`;
+    // Check if there's already an active meeting for this team
+    let meetingInfo = activeTeamMeetings.get(teamId);
+    
+    if (meetingInfo) {
+      // Meeting already exists, return existing meeting ID
+      console.log(`User ${startedBy} joining existing meeting for team ${team.name}`);
+      
+      return res.json({
+        success: true,
+        meetingId: meetingInfo.meetingId,
+        message: 'Joining existing team meeting',
+        isJoining: true,
+        startedBy: meetingInfo.startedBy,
+        startTime: meetingInfo.startTime
+      });
+    }
+    
+    // No active meeting, create new one
+    const meetingId = `team-${teamId}-${Date.now()}`;
+    
+    meetingInfo = {
+      meetingId,
+      teamId,
+      startedBy,
+      startedByStudentId,
+      startTime: new Date(),
+      participants: new Set([startedByStudentId])
+    };
+    
+    activeTeamMeetings.set(teamId, meetingInfo);
     
     // Notify all team members
     const teamMemberStudents = await Student.find({
@@ -12974,7 +13024,8 @@ app.post('/api/teams/:teamId/start-meeting', authenticate, async (req, res) => {
     res.json({
       success: true,
       meetingId,
-      message: 'Meeting started and invitations sent'
+      message: 'Meeting started and invitations sent',
+      isJoining: false
     });
     
   } catch (error) {
@@ -12983,13 +13034,46 @@ app.post('/api/teams/:teamId/start-meeting', authenticate, async (req, res) => {
   }
 });
 
+
+app.get('/api/teams/:teamId/active-meeting', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+    
+    const meetingInfo = activeTeamMeetings.get(teamId);
+    
+    if (meetingInfo) {
+      return res.json({
+        hasActiveMeeting: true,
+        meetingId: meetingInfo.meetingId,
+        startedBy: meetingInfo.startedBy,
+        startTime: meetingInfo.startTime,
+        participantCount: meetingInfo.participants.size
+      });
+    }
+    
+    res.json({ hasActiveMeeting: false });
+    
+  } catch (error) {
+    console.error('Check active meeting error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // End team meeting
 app.post('/api/teams/:teamId/end-meeting', authenticate, async (req, res) => {
   try {
-    const { meetingId, duration, participantCount } = req.body;
+    const { teamId } = req.params;
+    const { meetingId, duration, participantCount, endedBy } = req.body;
     
-    // Log meeting end (you can store this in database if needed)
-    console.log(`Meeting ${meetingId} ended. Duration: ${duration}min, Participants: ${participantCount}`);
+    // Remove meeting from active meetings
+    activeTeamMeetings.delete(teamId);
+    
+    console.log(`Meeting ${meetingId} ended by ${endedBy}. Duration: ${duration}min, Participants: ${participantCount}`);
     
     res.json({ success: true });
   } catch (error) {
