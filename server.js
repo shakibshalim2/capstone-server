@@ -5,6 +5,14 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const saltRounds = 10;
+const userSockets = new Map();
+
+
+const socketIo = require('socket.io');
+
+
+const { Server } = require('socket.io');
+const http = require('http');
 
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
@@ -18,6 +26,10 @@ const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); 
+
+
+// Create HTTP server
+const server = http.createServer(app);
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -54,6 +66,133 @@ const upload = multer({
       cb(new Error('File type not allowed'), false);
     }
   }
+});
+
+
+
+const io = socketIo(server, {
+  cors: {
+    origin: process.env.REACT_APP_CLIENT_URL || "http://localhost:3000",
+    methods: ["GET", "POST"]
+  }
+});
+// Store user socket connections
+
+io.on('connection', (socket) => {
+  socket.on('join', (userId) => {
+    userSockets.set(userId, socket.id);
+    console.log(`User ${userId} connected with socket ${socket.id}`);
+  });
+
+  socket.on('disconnect', () => {
+    for (let [userId, socketId] of userSockets.entries()) {
+      if (socketId === socket.id) {
+        userSockets.delete(userId);
+        console.log(`User ${userId} disconnected`);
+        break;
+      }
+    }
+  });
+});
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
+
+  // Handle user joining
+  socket.on('user-joined', (userData) => {
+    userSockets.set(userData.userId, socket.id);
+    socket.userId = userData.userId;
+    socket.userName = userData.userName;
+  });
+
+  // Handle joining meeting
+// Backend handles room-based signaling
+socket.on('join-meeting', (data) => {
+  const { meetingId, userId, userName, teamId } = data;
+  socket.join(meetingId);  // Users join the same room
+  
+  // Notify existing participants about new user
+  socket.to(meetingId).emit('user-joined-meeting', {
+    userId, userName, socketId: socket.id
+  });
+  
+  // Send existing participants to new user
+  socket.emit('existing-participants', existingParticipants);
+});
+
+
+// Creates peer connections with all existing participants
+newSocket.on('existing-participants', async (participants) => {
+  for (const participant of participants) {
+    await createPeerConnection(participant.socketId, participant.userName, false);
+  }
+});
+
+  // Handle WebRTC signaling
+  socket.on('offer', (data) => {
+    socket.to(data.to).emit('offer', {
+      offer: data.offer,
+      from: socket.id
+    });
+  });
+
+  socket.on('answer', (data) => {
+    socket.to(data.to).emit('answer', {
+      answer: data.answer,
+      from: socket.id
+    });
+  });
+
+  socket.on('ice-candidate', (data) => {
+    socket.to(data.to).emit('ice-candidate', {
+      candidate: data.candidate,
+      from: socket.id
+    });
+  });
+
+  // Handle leaving meeting
+  socket.on('leave-meeting', (data) => {
+    const { meetingId, userId } = data;
+    
+    socket.leave(meetingId);
+    
+    if (activeMeetings.has(meetingId)) {
+      const meeting = activeMeetings.get(meetingId);
+      meeting.participants.delete(userId);
+      
+      // Notify other participants
+      socket.to(meetingId).emit('user-left-meeting', { userId });
+      
+      // Clean up empty meetings
+      if (meeting.participants.size === 0) {
+        activeMeetings.delete(meetingId);
+      }
+    }
+  });
+
+  // Handle disconnect
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+    
+    if (socket.userId) {
+      userSockets.delete(socket.userId);
+      
+      // Remove from all meetings
+      for (const [meetingId, meeting] of activeMeetings.entries()) {
+        if (meeting.participants.has(socket.userId)) {
+          meeting.participants.delete(socket.userId);
+          socket.to(meetingId).emit('user-left-meeting', { 
+            userId: socket.userId 
+          });
+          
+          if (meeting.participants.size === 0) {
+            activeMeetings.delete(meetingId);
+          }
+        }
+      }
+    }
+  });
 });
 
 const {
@@ -94,7 +233,7 @@ mongoose.connect(
 
 
 // ✅ ADD THIS HELPER FUNCTION
-const createNotification = async (recipientId, type, title, message, data = {}) => {
+const createNotification = async (recipientId, recipientType, type, title, message, data = {}) => {
   try {
     const notification = new Notification({
       recipientId,
@@ -2237,6 +2376,308 @@ app.get('/api/students/materials', authenticate, async (req, res) => {
 });
 
 
+// Get student team milestones and progress
+app.get('/api/students/team-progress', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Access denied: Students only' });
+    }
+
+    const student = await Student.findById(req.user.id);
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // Find student's team
+    const team = await Team.findOne({
+      'members.studentId': student.studentId
+    });
+
+    if (!team) {
+      return res.status(404).json({ 
+        message: 'No team found',
+        hasTeam: false,
+        hasSupervisor: false
+      });
+    }
+
+    // Check if team has supervisor
+    if (!team.currentSupervisor || !team.currentSupervisor.facultyId) {
+      return res.json({
+        hasTeam: true,
+        hasSupervisor: false,
+        team: {
+          name: team.name,
+          phase: team.currentPhase || 'A',
+          members: team.members.length
+        },
+        message: 'Your team does not have a supervisor yet'
+      });
+    }
+
+    const currentPhase = team.currentPhase || team.phase || 'A';
+    
+    // Get predefined milestones (default and customized)
+    const predefinedMilestones = {
+      'A': [
+        { id: 'proposal', name: 'Project Proposal', weight: 40 },
+        { id: 'phase_a_presentation', name: 'Capstone A Presentation', weight: 60 }
+      ],
+      'B': [
+        { id: 'mid_demo', name: 'Mid Development Demo', weight: 50 },
+        { id: 'phase_b_presentation', name: 'Phase B Presentation', weight: 50 }
+      ],
+      'C': [
+        { id: 'final_implementation', name: 'Final Implementation', weight: 40 },
+        { id: 'final_presentation', name: 'Final Presentation', weight: 60 }
+      ]
+    };
+
+    // Get supervisor's customized predefined milestones
+    const customizedPredefined = await CustomPredefinedMilestone.find({
+      supervisorId: team.currentSupervisor.facultyId,
+      phase: currentPhase,
+      isActive: true
+    });
+
+    // Merge predefined with customizations
+    let phaseMilestones = predefinedMilestones[currentPhase] || [];
+    phaseMilestones = phaseMilestones.map(milestone => {
+      const customized = customizedPredefined.find(c => c.milestoneId === milestone.id);
+      return customized ? {
+        id: milestone.id,
+        name: customized.name,
+        weight: customized.weight,
+        description: customized.description,
+        type: 'predefined',
+        isCustomized: true
+      } : {
+        ...milestone,
+        type: 'predefined',
+        isCustomized: false
+      };
+    });
+
+    // Get custom milestones for current phase
+    const customMilestones = await CustomMilestone.find({
+      teamId: team._id,
+      supervisorId: team.currentSupervisor.facultyId,
+      phase: currentPhase,
+      isActive: true
+    }).sort({ createdAt: 1 });
+
+    const formattedCustomMilestones = customMilestones.map(milestone => ({
+      id: milestone._id.toString(),
+      name: milestone.name,
+      description: milestone.description,
+      weight: milestone.weight,
+      dueDate: milestone.dueDate,
+      type: 'custom',
+      createdAt: milestone.createdAt
+    }));
+
+    // Combine all milestones
+    const allMilestones = [...phaseMilestones, ...formattedCustomMilestones];
+
+    // Get completed milestones
+    const completedMilestones = team.completedMilestones || [];
+
+    // Calculate progress
+    const totalWeight = allMilestones.reduce((sum, milestone) => sum + milestone.weight, 0);
+    const completedWeight = allMilestones
+      .filter(milestone => completedMilestones.includes(milestone.id))
+      .reduce((sum, milestone) => sum + milestone.weight, 0);
+    
+    const progressPercentage = totalWeight > 0 ? Math.round((completedWeight / totalWeight) * 100) : 0;
+
+    // Add completion status to milestones
+    const milestonesWithStatus = allMilestones.map(milestone => ({
+      ...milestone,
+      isCompleted: completedMilestones.includes(milestone.id),
+      status: completedMilestones.includes(milestone.id) ? 'completed' : 'pending'
+    }));
+
+    // Get supervisor info
+    const supervisor = await Faculty.findById(team.currentSupervisor.facultyId)
+      .select('name email department');
+
+    res.json({
+      success: true,
+      hasTeam: true,
+      hasSupervisor: true,
+      team: {
+        _id: team._id,
+        name: team.name,
+        currentPhase: currentPhase,
+        members: team.members.length,
+        progressStatus: team.progressStatus || 'Not Set',
+        statusNotes: team.statusNotes || '',
+        lastProgressUpdate: team.lastProgressUpdate,
+        projectCompleted: team.projectCompleted || false,
+        projectCompletedDate: team.projectCompletedDate
+      },
+      supervisor: {
+        name: supervisor?.name || team.currentSupervisor.facultyName,
+        email: supervisor?.email || 'Not available',
+        department: supervisor?.department || team.currentSupervisor.facultyDepartment
+      },
+      progress: {
+        currentPhase: currentPhase,
+        totalMilestones: allMilestones.length,
+        completedMilestones: completedMilestones.length,
+        progressPercentage: progressPercentage,
+        totalWeight: totalWeight,
+        completedWeight: completedWeight
+      },
+      milestones: milestonesWithStatus
+    });
+
+  } catch (error) {
+    console.error('Get student team progress error:', error);
+    res.status(500).json({ 
+      message: 'Server error while fetching team progress',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
+    });
+  }
+});
+
+// Add this to server.js
+
+// Get student's team progress and milestones
+app.get('/api/students/my-team-progress', authenticate, async (req, res) => {
+  try {
+    const student = await Student.findById(req.user.id);
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // Find student's team
+    const team = await Team.findOne({
+      'members.studentId': student.studentId
+    });
+
+    if (!team) {
+      return res.status(404).json({ message: 'You are not in a team' });
+    }
+
+    if (!team.currentSupervisor || !team.currentSupervisor.facultyId) {
+      return res.status(404).json({ message: 'Your team does not have a supervisor' });
+    }
+
+    // Get supervisor information
+    const supervisor = await Faculty.findById(team.currentSupervisor.facultyId)
+      .select('name department email');
+
+    // Get custom milestones for this team
+    const customMilestones = await CustomMilestone.find({
+      teamId: team._id,
+      isActive: true
+    }).sort({ phase: 1, createdAt: 1 });
+
+    // Get supervisor's customized predefined milestones
+    const customizedPredefined = await CustomPredefinedMilestone.find({
+      supervisorId: team.currentSupervisor.facultyId,
+      isActive: true
+    });
+
+    // Default predefined milestones
+    const defaultPredefinedMilestones = {
+      'A': [
+        { id: 'proposal', name: 'Project Proposal', weight: 40, phase: 'A' },
+        { id: 'phase_a_presentation', name: 'Capstone A Presentation', weight: 60, phase: 'A' }
+      ],
+      'B': [
+        { id: 'mid_demo', name: 'Mid Development Demo', weight: 50, phase: 'B' },
+        { id: 'phase_b_presentation', name: 'Phase B Presentation', weight: 50, phase: 'B' }
+      ],
+      'C': [
+        { id: 'final_implementation', name: 'Final Implementation', weight: 40, phase: 'C' },
+        { id: 'final_presentation', name: 'Final Presentation', weight: 60, phase: 'C' }
+      ]
+    };
+
+    // Combine predefined and custom milestones
+    let allMilestones = [];
+    const currentPhase = team.currentPhase || team.phase || 'A';
+
+    // Add predefined milestones for current phase
+    if (defaultPredefinedMilestones[currentPhase]) {
+      defaultPredefinedMilestones[currentPhase].forEach(milestone => {
+        // Check if supervisor has customized this milestone
+        const customized = customizedPredefined.find(
+          c => c.milestoneId === milestone.id && c.phase === currentPhase
+        );
+
+        if (customized) {
+          allMilestones.push({
+            id: milestone.id,
+            name: customized.name,
+            weight: customized.weight,
+            description: customized.description,
+            phase: currentPhase,
+            isCustom: false,
+            isCustomized: true
+          });
+        } else {
+          allMilestones.push({
+            id: milestone.id,
+            name: milestone.name,
+            weight: milestone.weight,
+            phase: currentPhase,
+            isCustom: false,
+            isCustomized: false
+          });
+        }
+      });
+    }
+
+    // Add custom milestones for current phase
+    customMilestones
+      .filter(m => m.phase === currentPhase)
+      .forEach(milestone => {
+        allMilestones.push({
+          id: milestone._id.toString(),
+          name: milestone.name,
+          weight: milestone.weight,
+          description: milestone.description,
+          phase: milestone.phase,
+          dueDate: milestone.dueDate,
+          isCustom: true,
+          createdAt: milestone.createdAt
+        });
+      });
+
+    // Sort milestones by weight (descending) then by creation date
+    allMilestones.sort((a, b) => {
+      if (a.weight !== b.weight) return b.weight - a.weight;
+      return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+    });
+
+    res.json({
+      success: true,
+      teamId: team._id,
+      teamName: team.name,
+      currentPhase: currentPhase,
+      milestones: allMilestones,
+      completedMilestones: team.completedMilestones || [],
+      progressStatus: team.progressStatus || 'Not Set',
+      statusNotes: team.statusNotes || '',
+      lastProgressUpdate: team.lastProgressUpdate,
+      supervisorInfo: {
+        name: supervisor.name,
+        department: supervisor.department,
+        email: supervisor.email
+      }
+    });
+
+  } catch (error) {
+    console.error('Get student team progress error:', error);
+    res.status(500).json({ message: 'Server error while fetching team progress' });
+  }
+});
+
+
+
 app.put('/api/students/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2255,7 +2696,7 @@ app.put('/api/students/:id', authenticate, async (req, res) => {
         return res.status(400).json({ message: 'Student ID already exists' });
       }
     }
-
+it add .
     const student = await Student.findByIdAndUpdate(
       id,
       updates,
@@ -2600,16 +3041,21 @@ status: {
 // Add this to your server.js file
 
 // Support Ticket Schema
+// In server.js, update the supportTicketSchema (around line 1100):
 const supportTicketSchema = new mongoose.Schema({
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-  studentName: { type: String, required: true },
-  studentIdNumber: { type: String, required: true },
-  studentEmail: { type: String, required: true },
+  // User information - supports both students and faculty
+  userId: { type: mongoose.Schema.Types.ObjectId, required: true, refPath: 'userType' },
+  userType: { type: String, enum: ['Student', 'Faculty'], required: true },
+  userName: { type: String, required: true },
+  userIdentifier: { type: String, required: true }, // studentId for students, email for faculty
+  userEmail: { type: String, required: true },
+  
+  // Ticket information
   subject: { type: String, required: true },
   description: { type: String, required: true },
   category: { 
     type: String, 
-    enum: ['Technical', 'Academic', 'Team', 'Account', 'Other'], 
+    enum: ['Technical', 'Academic', 'Team', 'Account', 'Student', 'System', 'Other'], 
     default: 'Other' 
   },
   priority: { 
@@ -2622,6 +3068,8 @@ const supportTicketSchema = new mongoose.Schema({
     enum: ['Open', 'In Progress', 'Resolved', 'Closed'], 
     default: 'Open' 
   },
+  
+  // Admin response
   adminResponse: { type: String, default: '' },
   adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
   adminName: { type: String },
@@ -2634,6 +3082,7 @@ const SupportTicket = mongoose.model('SupportTicket', supportTicketSchema);
 
 // API Endpoints for Support Tickets
 
+// Submit support ticket (Student)
 // Submit support ticket (Student)
 app.post('/api/support/submit', authenticate, async (req, res) => {
   try {
@@ -2649,10 +3098,11 @@ app.post('/api/support/submit', authenticate, async (req, res) => {
     }
 
     const supportTicket = new SupportTicket({
-      studentId: req.user.id,
-      studentName: student.name,
-      studentIdNumber: student.studentId,
-      studentEmail: student.email,
+      userId: req.user.id,          // ✅ Use userId
+      userType: 'Student',          // ✅ Set userType
+      userName: student.name,       // ✅ Use userName
+      userIdentifier: student.studentId,  // ✅ Use userIdentifier
+      userEmail: student.email,     // ✅ Use userEmail
       subject: subject.trim(),
       description: description.trim(),
       category: category || 'Other',
@@ -2673,11 +3123,16 @@ app.post('/api/support/submit', authenticate, async (req, res) => {
   }
 });
 
+
+
+
+// Get student's support tickets
 // Get student's support tickets
 app.get('/api/support/my-tickets', authenticate, async (req, res) => {
   try {
     const tickets = await SupportTicket.find({
-      studentId: req.user.id
+      userId: req.user.id,  // ✅ Use userId
+      userType: 'Student'   // ✅ Specify user type for students
     }).sort({ submittedAt: -1 });
 
     res.json({
@@ -2691,19 +3146,146 @@ app.get('/api/support/my-tickets', authenticate, async (req, res) => {
   }
 });
 
+
+// Faculty: Submit support ticket
+app.post('/api/faculty/support/submit', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const { subject, description, category, priority } = req.body;
+    
+    if (!subject || !description) {
+      return res.status(400).json({ message: 'Subject and description are required' });
+    }
+
+    const faculty = await Faculty.findById(req.user.id);
+    if (!faculty) {
+      return res.status(404).json({ message: 'Faculty not found' });
+    }
+
+    const supportTicket = new SupportTicket({
+      userId: req.user.id,
+      userType: 'Faculty',
+      userName: faculty.name,
+      userIdentifier: faculty.email,
+      userEmail: faculty.email,
+      subject: subject.trim(),
+      description: description.trim(),
+      category: category || 'Other',
+      priority: priority || 'Medium'
+    });
+
+    await supportTicket.save();
+
+    // Create notification for admins (you can implement this later)
+    console.log(`New faculty support ticket submitted by ${faculty.name}: ${subject}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Support ticket submitted successfully',
+      ticketId: supportTicket._id
+    });
+
+  } catch (error) {
+    console.error('Faculty submit support ticket error:', error);
+    res.status(500).json({ message: 'Server error while submitting ticket' });
+  }
+});
+
+// Faculty: Get own support tickets
+// Faculty: Get own support tickets - ENHANCED VERSION
+// Enhanced Faculty: Get own support tickets with debugging
+app.get('/api/faculty/support/my-tickets', authenticate, async (req, res) => {
+  try {
+    console.log('=== FACULTY TICKETS DEBUG ===');
+    console.log('Request user:', req.user);
+    console.log('User ID:', req.user.id);
+    console.log('User role:', req.user.role);
+    
+    if (req.user.role !== 'faculty') {
+      console.log('❌ Access denied - not faculty role:', req.user.role);
+      return res.status(403).json({ 
+        success: false,
+        message: 'Access denied: Faculty only' 
+      });
+    }
+
+    // Check if user ID is valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
+      console.log('❌ Invalid user ID format:', req.user.id);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user ID format'
+      });
+    }
+
+    console.log('🔍 Looking for faculty with ID:', req.user.id);
+    
+    // Verify faculty exists with detailed logging
+    const faculty = await Faculty.findById(req.user.id);
+    console.log('Faculty query result:', faculty);
+    
+    if (!faculty) {
+      console.log('❌ Faculty not found in database');
+      console.log('Searching in Faculty collection...');
+      
+      // Additional debug: check if faculty exists with different criteria
+      const facultyByEmail = await Faculty.find({}).limit(5);
+      console.log('Sample faculty records:', facultyByEmail.map(f => ({ id: f._id, email: f.email, name: f.name })));
+      
+      return res.status(404).json({ 
+        success: false,
+        message: 'Faculty not found' 
+      });
+    }
+
+    console.log('✅ Faculty found:', faculty.name, faculty.email);
+
+    console.log('🔍 Searching for tickets with userId:', req.user.id, 'userType: Faculty');
+    
+    const tickets = await SupportTicket.find({
+      userId: req.user.id,
+      userType: 'Faculty'
+    }).sort({ submittedAt: -1 });
+
+    console.log('📋 Found tickets:', tickets.length);
+    console.log('Ticket details:', tickets.map(t => ({ id: t._id, subject: t.subject, status: t.status })));
+
+    res.json({
+      success: true,
+      tickets: tickets || [],
+      count: tickets.length
+    });
+
+  } catch (error) {
+    console.error('❌ Get faculty tickets error:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error while fetching tickets',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+// Get all support tickets (Admin)
 // Get all support tickets (Admin)
 app.get('/api/admin/support/tickets', authenticate, async (req, res) => {
   try {
-    const { status, category, priority } = req.query;
+    const { status, category, priority, userType } = req.query;
     
     let filter = {};
     if (status && status !== 'all') filter.status = status;
     if (category && category !== 'all') filter.category = category;
     if (priority && priority !== 'all') filter.priority = priority;
+    if (userType && userType !== 'all') filter.userType = userType;
 
     const tickets = await SupportTicket.find(filter)
       .sort({ submittedAt: -1 })
-      .populate('studentId', 'name studentId email')
+      .populate('userId', 'name studentId email') // ✅ Use userId instead of studentId
       .lean();
 
     res.json({
@@ -2718,26 +3300,26 @@ app.get('/api/admin/support/tickets', authenticate, async (req, res) => {
 });
 
 // Update ticket status (Admin)
-// Update ticket status (Admin) - IMPROVED VERSION
 app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req, res) => {
   try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
     const { ticketId } = req.params;
     const { status, adminResponse } = req.body;
 
-    // Validate required fields
     if (!status) {
       return res.status(400).json({ message: 'Status is required' });
     }
 
     const updateData = { status };
     
-    // Only update response fields if adminResponse is provided
     if (adminResponse && adminResponse.trim()) {
       updateData.adminResponse = adminResponse.trim();
       updateData.respondedAt = new Date();
     }
     
-    // Set resolved date for final statuses
     if (status === 'Resolved' || status === 'Closed') {
       updateData.resolvedAt = new Date();
     }
@@ -2752,19 +3334,16 @@ app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req,
       return res.status(404).json({ message: 'Ticket not found' });
     }
 
-    // ✅ IMPROVED: Better notification logic
+    // Notification logic (from first endpoint)
     let notificationTitle = '';
     let notificationMessage = '';
     let notificationType = 'general';
 
-    // Create appropriate notification based on status and whether response was provided
     if (adminResponse && adminResponse.trim()) {
-      // Admin provided a response message
       notificationTitle = 'Support Ticket Response';
       notificationMessage = `Admin responded to your ticket "${ticket.subject}": ${adminResponse.substring(0, 100)}${adminResponse.length > 100 ? '...' : ''}`;
       notificationType = 'support_response';
     } else {
-      // Admin only updated status without message
       switch (status) {
         case 'In Progress':
           notificationTitle = 'Support Ticket Update';
@@ -2788,10 +3367,11 @@ app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req,
       }
     }
 
-    // Create notification for the student
+    // Create notification
     if (notificationTitle) {
       const notification = new Notification({
-        recipientId: ticket.studentId,
+        recipientId: ticket.userId,
+        recipientType: ticket.userType,
         type: notificationType,
         title: notificationTitle,
         message: notificationMessage,
@@ -2809,11 +3389,11 @@ app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req,
       });
 
       await notification.save();
-      console.log(`📧 Support notification created for student ${ticket.studentId}: ${notificationTitle}`);
+      console.log(`📧 Support notification created for ${ticket.userType.toLowerCase()} ${ticket.userId}: ${notificationTitle}`);
 
-      // ✅ Send real-time notification if student is online
-      if (userSockets && userSockets.has(ticket.studentId.toString())) {
-        io.to(userSockets.get(ticket.studentId.toString())).emit('supportNotification', {
+      // ADD: Real-time socket notification (from second endpoint)
+      if (typeof userSockets !== 'undefined' && userSockets && userSockets.has(ticket.userId.toString())) {
+        io.to(userSockets.get(ticket.userId.toString())).emit('supportNotification', {
           type: notificationType,
           title: notificationTitle,
           message: notificationMessage,
@@ -2838,6 +3418,7 @@ app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req,
     res.status(500).json({ message: 'Server error while updating ticket' });
   }
 });
+
 
 
 // Delete ticket (Admin)
@@ -6974,36 +7555,7 @@ app.put('/api/notifications/:notificationId/read', authenticate, async (req, res
 // ===== END OF AUTOMATIC GROUP CREATION SYSTEM =====
 
 // ✅ OPTIONAL: Add Socket.IO for real-time notifications
-const http = require('http');
-const socketIo = require('socket.io');
 
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: process.env.REACT_APP_CLIENT_URL || "http://localhost:3000",
-    methods: ["GET", "POST"]
-  }
-});
-
-// Store user socket connections
-const userSockets = new Map();
-
-io.on('connection', (socket) => {
-  socket.on('join', (userId) => {
-    userSockets.set(userId, socket.id);
-    console.log(`User ${userId} connected with socket ${socket.id}`);
-  });
-
-  socket.on('disconnect', () => {
-    for (let [userId, socketId] of userSockets.entries()) {
-      if (socketId === socket.id) {
-        userSockets.delete(userId);
-        console.log(`User ${userId} disconnected`);
-        break;
-      }
-    }
-  });
-});
 
 // Helper function to emit notification
 const emitNotification = (userId, notification) => {
@@ -11816,6 +12368,595 @@ app.get('/api/admin/evaluations/stats', authenticate, async (req, res) => {
   }
 });
 
+
+
+// Admin: Get all support tickets (updated to include faculty tickets)
+app.get('/api/admin/support/tickets', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied: Admin only' });
+    }
+
+    const { status, category, priority, userType } = req.query;
+    
+    let filter = {};
+    if (status && status !== 'all') filter.status = status;
+    if (category && category !== 'all') filter.category = category;
+    if (priority && priority !== 'all') filter.priority = priority;
+    if (userType && userType !== 'all') filter.userType = userType;
+
+    const tickets = await SupportTicket.find(filter)
+      .sort({ submittedAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      tickets
+    });
+
+  } catch (error) {
+    console.error('Get admin tickets error:', error);
+    res.status(500).json({ message: 'Server error while fetching tickets' });
+  }
+});
+
+// // Admin: Update ticket status (updated to handle both student and faculty tickets)
+// app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req, res) => {
+//   try {
+//     if (req.user.role !== 'admin') {
+//       return res.status(403).json({ message: 'Access denied: Admin only' });
+//     }
+
+//     const { ticketId } = req.params;
+//     const { status, adminResponse } = req.body;
+
+//     if (!status) {
+//       return res.status(400).json({ message: 'Status is required' });
+//     }
+
+//     const updateData = { status };
+    
+//     if (adminResponse && adminResponse.trim()) {
+//       updateData.adminResponse = adminResponse.trim();
+//       updateData.respondedAt = new Date();
+//     }
+    
+//     if (status === 'Resolved' || status === 'Closed') {
+//       updateData.resolvedAt = new Date();
+//     }
+
+//     const ticket = await SupportTicket.findByIdAndUpdate(
+//       ticketId,
+//       updateData,
+//       { new: true }
+//     );
+
+//     if (!ticket) {
+//       return res.status(404).json({ message: 'Ticket not found' });
+//     }
+
+//     // Create notification based on user type
+//     let notificationTitle = '';
+//     let notificationMessage = '';
+//     let notificationType = 'general';
+
+//     if (adminResponse && adminResponse.trim()) {
+//       notificationTitle = 'Support Ticket Response';
+//       notificationMessage = `Admin responded to your ticket "${ticket.subject}": ${adminResponse.substring(0, 100)}${adminResponse.length > 100 ? '...' : ''}`;
+//       notificationType = 'support_response';
+//     } else {
+//       switch (status) {
+//         case 'In Progress':
+//           notificationTitle = 'Support Ticket Update';
+//           notificationMessage = `Your support ticket "${ticket.subject}" is now being processed.`;
+//           notificationType = 'support_update';
+//           break;
+//         case 'Resolved':
+//           notificationTitle = 'Support Ticket Resolved';
+//           notificationMessage = `Your support ticket "${ticket.subject}" has been marked as resolved.`;
+//           notificationType = 'support_resolved';
+//           break;
+//         case 'Closed':
+//           notificationTitle = 'Support Ticket Closed';
+//           notificationMessage = `Your support ticket "${ticket.subject}" has been closed.`;
+//           notificationType = 'support_closed';
+//           break;
+//         default:
+//           notificationTitle = 'Support Ticket Status Update';
+//           notificationMessage = `Your support ticket "${ticket.subject}" status has been updated to: ${status}`;
+//           notificationType = 'support_update';
+//       }
+//     }
+
+//     // Create notification
+//     if (notificationTitle) {
+//       const notification = new Notification({
+//         recipientId: ticket.userId,
+//         recipientType: ticket.userType,
+//         type: notificationType,
+//         title: notificationTitle,
+//         message: notificationMessage,
+//         data: {
+//           ticketId: ticket._id,
+//           ticketSubject: ticket.subject,
+//           ticketStatus: status,
+//           adminResponse: adminResponse || null,
+//           category: ticket.category,
+//           priority: ticket.priority,
+//           hasResponse: !!(adminResponse && adminResponse.trim())
+//         },
+//         read: false,
+//         createdAt: new Date()
+//       });
+
+//       await notification.save();
+//       console.log(`📧 Support notification created for ${ticket.userType.toLowerCase()} ${ticket.userId}: ${notificationTitle}`);
+//     }
+
+//     res.json({
+//       success: true,
+//       message: adminResponse 
+//         ? 'Ticket updated with response successfully' 
+//         : 'Ticket status updated successfully',
+//       ticket,
+//       hasResponse: !!(adminResponse && adminResponse.trim())
+//     });
+
+//   } catch (error) {
+//     console.error('Update ticket error:', error);
+//     res.status(500).json({ message: 'Server error while updating ticket' });
+//   }
+// });
+
+// Get unread student problems count for admin
+app.get('/api/admin/student-problems/unread-count', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const unreadCount = await SupportTicket.countDocuments({
+      status: { $in: ['Open', 'In Progress'] }
+    });
+
+    res.json({
+      success: true,
+      count: unreadCount
+    });
+
+  } catch (error) {
+    console.error('Get unread problems count error:', error);
+    res.status(500).json({ message: 'Server error while fetching unread count' });
+  }
+});
+
+// Get pending deliverables count for admin
+app.get('/api/admin/deliverables/pending-count', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const pendingCount = await DeliverableSubmission.countDocuments({
+      status: 'pending'
+    });
+
+    res.json({
+      success: true,
+      count: pendingCount
+    });
+
+  } catch (error) {
+    console.error('Get pending deliverables count error:', error);
+    res.status(500).json({ message: 'Server error while fetching pending count' });
+  }
+});
+
+
+// Add these endpoints after your existing routes in server.js
+
+// Get enrollment statistics
+app.get('/api/admin/reports/enrollment', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const { startDate, endDate } = req.query;
+    
+    // Get total student counts by program
+    const studentsByProgram = await Student.aggregate([
+      {
+        $match: {
+          status: 'Active',
+          ...(startDate && endDate && {
+            enrolled: {
+              $gte: new Date(startDate),
+              $lte: new Date(endDate)
+            }
+          })
+        }
+      },
+      {
+        $group: {
+          _id: '$program',
+          count: { $sum: 1 },
+          avgCGPA: { $avg: '$cgpa' },
+          avgCredits: { $avg: '$completedCredits' }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]);
+
+    // Get team formation stats
+    const teamStats = await Team.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Get students in teams vs not in teams
+    const studentsInTeams = await Team.aggregate([
+      { $unwind: '$members' },
+      {
+        $group: {
+          _id: null,
+          totalStudentsInTeams: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const totalActiveStudents = await Student.countDocuments({ status: 'Active' });
+    const studentsInTeamsCount = studentsInTeams[0]?.totalStudentsInTeams || 0;
+    const studentsNotInTeams = totalActiveStudents - studentsInTeamsCount;
+
+    res.json({
+      success: true,
+      data: {
+        studentsByProgram: studentsByProgram.map(item => ({
+          program: item._id || 'Undecided',
+          students: item.count,
+          avgCGPA: parseFloat(item.avgCGPA?.toFixed(2)) || 0,
+          avgCredits: parseFloat(item.avgCredits?.toFixed(1)) || 0
+        })),
+        teamStats: teamStats.reduce((acc, item) => {
+          acc[item._id] = item.count;
+          return acc;
+        }, {}),
+        teamFormation: {
+          studentsInTeams: studentsInTeamsCount,
+          studentsNotInTeams: studentsNotInTeams,
+          totalStudents: totalActiveStudents,
+          teamFormationRate: ((studentsInTeamsCount / totalActiveStudents) * 100).toFixed(1)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Enrollment report error:', error);
+    res.status(500).json({ message: 'Server error while generating enrollment report' });
+  }
+});
+
+// Get faculty workload report
+app.get('/api/admin/reports/faculty', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const facultyWorkload = await Faculty.aggregate([
+      {
+        $match: { status: 'Active' }
+      },
+      {
+        $lookup: {
+          from: 'teams',
+          let: { facultyId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $eq: ['$currentSupervisor.facultyId', '$$facultyId']
+                }
+              }
+            }
+          ],
+          as: 'supervisedTeams'
+        }
+      },
+      {
+        $lookup: {
+          from: 'boards',
+          let: { facultyId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $in: ['$$facultyId', '$faculty._id']
+                }
+              }
+            }
+          ],
+          as: 'boardMemberships'
+        }
+      },
+      {
+        $project: {
+          name: 1,
+          department: 1,
+          supervisedTeamsCount: { $size: '$supervisedTeams' },
+          boardMembershipsCount: { $size: '$boardMemberships' },
+          totalStudents: {
+            $reduce: {
+              input: '$supervisedTeams',
+              initialValue: 0,
+              in: { $add: ['$$value', { $size: '$$this.members' }] }
+            }
+          }
+        }
+      },
+      { $sort: { supervisedTeamsCount: -1 } }
+    ]);
+
+    // Department-wise distribution
+    const departmentStats = await Faculty.aggregate([
+      {
+        $match: { status: 'Active' }
+      },
+      {
+        $group: {
+          _id: '$department',
+          facultyCount: { $sum: 1 }
+        }
+      },
+      { $sort: { facultyCount: -1 } }
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        facultyWorkload: facultyWorkload.map(faculty => ({
+          name: faculty.name,
+          department: faculty.department,
+          supervisedTeams: faculty.supervisedTeamsCount,
+          boardMemberships: faculty.boardMembershipsCount,
+          totalStudents: faculty.totalStudents,
+          workloadScore: (faculty.supervisedTeamsCount * 3) + faculty.boardMembershipsCount
+        })),
+        departmentStats: departmentStats.map(dept => ({
+          department: dept._id || 'Unassigned',
+          facultyCount: dept.facultyCount
+        }))
+      }
+    });
+
+  } catch (error) {
+    console.error('Faculty report error:', error);
+    res.status(500).json({ message: 'Server error while generating faculty report' });
+  }
+});
+
+// Get project progress report
+app.get('/api/admin/reports/projects', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    // Teams by phase
+    const teamsByPhase = await Team.aggregate([
+      {
+        $group: {
+          _id: '$currentPhase',
+          count: { $sum: 1 },
+          avgMemberCount: { $avg: '$memberCount' }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Teams by status
+    const teamsByStatus = await Team.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Project completion stats
+    const projectStats = await Team.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalTeams: { $sum: 1 },
+          completedProjects: {
+            $sum: { $cond: [{ $eq: ['$projectCompleted', true] }, 1, 0] }
+          },
+          specialCaseTeams: {
+            $sum: { $cond: [{ $eq: ['$specialCase', true] }, 1, 0] }
+          }
+        }
+      }
+    ]);
+
+    const stats = projectStats[0] || {};
+    const completionRate = stats.totalTeams > 0 ? 
+      ((stats.completedProjects / stats.totalTeams) * 100).toFixed(1) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        phaseDistribution: teamsByPhase.map(phase => ({
+          phase: `Phase ${phase._id || 'A'}`,
+          teams: phase.count,
+          avgMemberCount: parseFloat(phase.avgMemberCount?.toFixed(1)) || 0
+        })),
+        statusDistribution: teamsByStatus.map(status => ({
+          status: status._id,
+          count: status.count
+        })),
+        projectProgress: {
+          totalTeams: stats.totalTeams || 0,
+          completedProjects: stats.completedProjects || 0,
+          specialCaseTeams: stats.specialCaseTeams || 0,
+          completionRate: parseFloat(completionRate)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Projects report error:', error);
+    res.status(500).json({ message: 'Server error while generating projects report' });
+  }
+});
+
+// Get system overview report
+app.get('/api/admin/reports/system', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const [
+      totalStudents,
+      totalFaculty,
+      totalTeams,
+      totalBoards,
+      supportTickets,
+      deliverables
+    ] = await Promise.all([
+      Student.countDocuments({ status: 'Active' }),
+      Faculty.countDocuments({ status: 'Active' }),
+      Team.countDocuments(),
+      Board.countDocuments({ isActive: true }),
+      SupportTicket.countDocuments(),
+      DeliverableSubmission.countDocuments()
+    ]);
+
+    // Recent activity
+    const recentTeams = await Team.countDocuments({
+      createdDate: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    });
+
+    const recentTickets = await SupportTicket.countDocuments({
+      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        overview: {
+          totalStudents,
+          totalFaculty,
+          totalTeams,
+          totalBoards,
+          supportTickets,
+          deliverables
+        },
+        recentActivity: {
+          newTeamsThisWeek: recentTeams,
+          newTicketsThisWeek: recentTickets
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('System report error:', error);
+    res.status(500).json({ message: 'Server error while generating system report' });
+  }
+});
+
+
+// Start team meeting
+app.post('/api/teams/:teamId/start-meeting', authenticate, async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { startedBy, startedByStudentId } = req.body;
+    
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+    
+    // Verify user is team member
+    const isMember = team.members.some(member => 
+      member.studentId === startedByStudentId
+    );
+    
+    if (!isMember) {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
+    
+    const meetingId = `meeting_${teamId}_${Date.now()}`;
+    
+    // Notify all team members
+    const teamMemberStudents = await Student.find({
+      studentId: { $in: team.members.map(m => m.studentId) }
+    });
+    
+    for (const student of teamMemberStudents) {
+      if (student.studentId !== startedByStudentId) {
+        const notification = new Notification({
+          recipientId: student._id,
+          recipientType: 'Student',
+          type: 'general',
+          title: 'Team Meeting Started',
+          message: `${startedBy} started a team meeting. Click to join!`,
+          data: {
+            meetingId,
+            teamId,
+            startedBy,
+            action: 'join_meeting'
+          },
+          read: false
+        });
+        await notification.save();
+        
+        // Send real-time notification if user is online
+        const userSocketId = userSockets.get(student._id.toString());
+        if (userSocketId) {
+          io.to(userSocketId).emit('meeting-invitation', {
+            meetingId,
+            teamName: team.name,
+            startedBy,
+            teamId
+          });
+        }
+      }
+    }
+    
+    res.json({
+      success: true,
+      meetingId,
+      message: 'Meeting started and invitations sent'
+    });
+    
+  } catch (error) {
+    console.error('Start meeting error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// End team meeting
+app.post('/api/teams/:teamId/end-meeting', authenticate, async (req, res) => {
+  try {
+    const { meetingId, duration, participantCount } = req.body;
+    
+    // Log meeting end (you can store this in database if needed)
+    console.log(`Meeting ${meetingId} ended. Duration: ${duration}min, Participants: ${participantCount}`);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('End meeting error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 
 app.use(cors(corsOptions));
