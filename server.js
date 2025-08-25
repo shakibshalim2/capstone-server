@@ -6660,7 +6660,7 @@ app.post('/api/agora/token', authenticate, async (req, res) => {
 const corsOptions = {
   origin: [
     'http://localhost:3000', // Development
-    'https://supervise-me.netlify.app', // Production
+    'https://supervise-me.onrender.com', // Production
   ],
   credentials: true,
   optionsSuccessStatus: 200
