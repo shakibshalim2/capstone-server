@@ -2696,7 +2696,7 @@ app.put('/api/students/:id', authenticate, async (req, res) => {
         return res.status(400).json({ message: 'Student ID already exists' });
       }
     }
-it add .
+
     const student = await Student.findByIdAndUpdate(
       id,
       updates,
