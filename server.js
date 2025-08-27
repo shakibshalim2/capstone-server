@@ -6,16 +6,6 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const saltRounds = 10;
 
-const activeMeetings = new Map();
-const userSockets = new Map();
-
-
-const socketIo = require('socket.io');
-
-
-const { Server } = require('socket.io');
-const http = require('http');
-
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 
@@ -28,12 +18,6 @@ const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); 
-
-
-// Create HTTP server
-const server = http.createServer(app);
-
-const activeTeamMeetings = new Map();
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -72,177 +56,21 @@ const upload = multer({
   }
 });
 
-
-
-
-const io = socketIo(server, {
-  cors: {
-    origin: process.env.REACT_APP_CLIENT_URL || "http://localhost:3000",
-    methods: ["GET", "POST"]
+const isValidUrl = (string) => {
+  try {
+    new URL(string);
+    return true;
+  } catch (_) {
+    return false;
   }
-});
+};
 
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+const clearUserCache = (userId) => {
+  const cacheKey = `requests_${userId}`;
+  requestCache.delete(cacheKey);
+  console.log(`🗑️ Cleared cache for user ${userId}`);
+};
 
-
-  // Handle joining meeting
-// Backend handles room-based signaling
-socket.on('join-meeting', (data) => {
-  const { meetingId, userId, userName, teamId } = data;
-  
-  console.log(`${userName} joining meeting ${meetingId}`);
-  
-  // Join the socket room
-  socket.join(meetingId);
-  
-  // Initialize meeting if it doesn't exist
-  if (!activeMeetings.has(meetingId)) {
-    activeMeetings.set(meetingId, {
-      participants: new Map(),
-      teamId: teamId,
-      startTime: new Date()
-    });
-  }
-
-  const meeting = activeMeetings.get(meetingId);
-  
-  // Get existing participants before adding new one
-  const existingParticipants = Array.from(meeting.participants.values());
-
-  // Add new participant
-  meeting.participants.set(userId, {
-    userId,
-    userName,
-    socketId: socket.id,
-    joinedAt: new Date()
-  });
-  
-  console.log(`User ${userName} joined meeting ${meetingId}. Total participants: ${meeting.participants.size}`);
-  
-  // Send existing participants to the new user
-  socket.emit('existing-participants', existingParticipants);
-  
-  // Notify existing participants about new user
-  socket.to(meetingId).emit('user-joined-meeting', {
-    userId, 
-    userName, 
-    socketId: socket.id,
-    totalParticipants: meeting.participants.size
-  });
-
-  // Store user info in socket for cleanup
-  socket.userId = userId;
-  socket.userName = userName;
-  socket.meetingId = meetingId;
-});
-
-// Creates peer connections with all existing participants
-newSocket.on('existing-participants', async (participants) => {
-  for (const participant of participants) {
-    await createPeerConnection(participant.socketId, participant.userName, false);
-  }
-});
-
-  // Handle WebRTC signaling
-  socket.on('offer', (data) => {
-    socket.to(data.to).emit('offer', {
-      offer: data.offer,
-      from: socket.id
-    });
-  });
-
-  socket.on('answer', (data) => {
-    socket.to(data.to).emit('answer', {
-      answer: data.answer,
-      from: socket.id
-    });
-  });
-
-  socket.on('ice-candidate', (data) => {
-    socket.to(data.to).emit('ice-candidate', {
-      candidate: data.candidate,
-      from: socket.id
-    });
-  });
-
-  // Handle leaving meeting
- socket.on('leave-meeting', (data) => {
-  const { meetingId, userId, teamId } = data;
-  
-  console.log(`${socket.userName} leaving meeting ${meetingId}`);
-  
-  socket.leave(meetingId);
-  
-  if (activeMeetings.has(meetingId)) {
-    const meeting = activeMeetings.get(meetingId);
-    meeting.participants.delete(userId);
-    
-    // Notify other participants with socketId for cleanup
-    socket.to(meetingId).emit('user-left-meeting', { 
-      userId,
-      socketId: socket.id,
-      totalParticipants: meeting.participants.size 
-    });
-    
-    // Clean up empty meetings
-    if (meeting.participants.size === 0) {
-      activeMeetings.delete(meetingId);
-      console.log(`Meeting ${meetingId} deleted - no participants remaining`);
-    }
-  }
-
-  // Update active team meetings
-  const meetingInfo = activeTeamMeetings.get(teamId);
-  if (meetingInfo) {
-    meetingInfo.participants.delete(userId);
-    
-    if (meetingInfo.participants.size === 0) {
-      activeTeamMeetings.delete(teamId);
-      console.log(`Team meeting for team ${teamId} ended - no participants remaining`);
-    }
-  }
-});
-
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    
-    if (socket.userId) {
-      userSockets.delete(socket.userId);
-      
-      // Remove from all meetings and team meetings
-      for (const [teamId, meetingInfo] of activeTeamMeetings.entries()) {
-        if (meetingInfo.participants.has(socket.userId)) {
-          meetingInfo.participants.delete(socket.userId);
-          
-          if (meetingInfo.participants.size === 0) {
-            activeTeamMeetings.delete(teamId);
-            console.log(`Team meeting for team ${teamId} ended - all participants disconnected`);
-          }
-        }
-      }
-      
-      // Remove from all meetings
-      for (const [meetingId, meeting] of activeMeetings.entries()) {
-        if (meeting.participants.has(socket.userId)) {
-          meeting.participants.delete(socket.userId);
-          
-          // Notify remaining participants
-          io.to(meetingId).emit('user-left-meeting', { 
-            userId: socket.userId,
-            totalParticipants: meeting.participants.size
-          });
-          
-          if (meeting.participants.size === 0) {
-            activeMeetings.delete(meetingId);
-          }
-        }
-      }
-    }
-  });
-});
 
 const {
   ADMIN_USERNAME,
@@ -377,6 +205,7 @@ const createTeamRequestNotification = async ({
   try {
     const notification = new Notification({
       recipientId,
+      recipientType: 'Student',
       type: 'team_request',
       title: 'New Team Request',
       message: message,
@@ -498,6 +327,44 @@ const deliverableSubmissionSchema = new mongoose.Schema({
 const Deliverable = mongoose.model('Deliverable', deliverableSchema);
 const DeliverableSubmission = mongoose.model('DeliverableSubmission', deliverableSubmissionSchema);
 
+// Add this schema after your existing schemas in server.js
+const meetingSchema = new mongoose.Schema({
+  meetingId: { type: String, unique: true, required: true },
+  teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
+  teamName: { type: String, required: true },
+  supervisorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Faculty', required: true },
+  supervisorName: { type: String, required: true },
+  
+  title: { type: String, required: true },
+  description: { type: String },
+  scheduledDateTime: { type: Date, required: true },
+  duration: { type: Number, default: 60 }, // in minutes
+  
+  meetingLink: { type: String, required: true },
+  roomId: { type: String, required: true },
+  
+  status: { 
+    type: String, 
+    enum: ['scheduled', 'ongoing', 'completed', 'cancelled'], 
+    default: 'scheduled' 
+  },
+  
+  attendees: [{
+    studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student' },
+    studentName: { type: String },
+    studentEmail: { type: String },
+    status: { 
+      type: String, 
+      enum: ['invited', 'accepted', 'declined', 'attended'], 
+      default: 'invited' 
+    }
+  }],
+  
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+const Meeting = mongoose.model('Meeting', meetingSchema);
 
 // Annoucement Schema
 const announcementSchema = new mongoose.Schema({
@@ -3349,26 +3216,26 @@ app.get('/api/admin/support/tickets', authenticate, async (req, res) => {
 });
 
 // Update ticket status (Admin)
+// Update ticket status (Admin) - IMPROVED VERSION
 app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied: Admin only' });
-    }
-
     const { ticketId } = req.params;
     const { status, adminResponse } = req.body;
 
+    // Validate required fields
     if (!status) {
       return res.status(400).json({ message: 'Status is required' });
     }
 
     const updateData = { status };
     
+    // Only update response fields if adminResponse is provided
     if (adminResponse && adminResponse.trim()) {
       updateData.adminResponse = adminResponse.trim();
       updateData.respondedAt = new Date();
     }
     
+    // Set resolved date for final statuses
     if (status === 'Resolved' || status === 'Closed') {
       updateData.resolvedAt = new Date();
     }
@@ -3383,16 +3250,19 @@ app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req,
       return res.status(404).json({ message: 'Ticket not found' });
     }
 
-    // Notification logic (from first endpoint)
+    // ✅ IMPROVED: Better notification logic
     let notificationTitle = '';
     let notificationMessage = '';
     let notificationType = 'general';
 
+    // Create appropriate notification based on status and whether response was provided
     if (adminResponse && adminResponse.trim()) {
+      // Admin provided a response message
       notificationTitle = 'Support Ticket Response';
       notificationMessage = `Admin responded to your ticket "${ticket.subject}": ${adminResponse.substring(0, 100)}${adminResponse.length > 100 ? '...' : ''}`;
       notificationType = 'support_response';
     } else {
+      // Admin only updated status without message
       switch (status) {
         case 'In Progress':
           notificationTitle = 'Support Ticket Update';
@@ -3416,10 +3286,10 @@ app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req,
       }
     }
 
-    // Create notification
+    // Create notification for the student
     if (notificationTitle) {
       const notification = new Notification({
-        recipientId: ticket.userId,
+        recipientId: ticket.studentId,
         recipientType: ticket.userType,
         type: notificationType,
         title: notificationTitle,
@@ -3438,11 +3308,11 @@ app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req,
       });
 
       await notification.save();
-      console.log(`📧 Support notification created for ${ticket.userType.toLowerCase()} ${ticket.userId}: ${notificationTitle}`);
+      console.log(`📧 Support notification created for student ${ticket.studentId}: ${notificationTitle}`);
 
-      // ADD: Real-time socket notification (from second endpoint)
-      if (typeof userSockets !== 'undefined' && userSockets && userSockets.has(ticket.userId.toString())) {
-        io.to(userSockets.get(ticket.userId.toString())).emit('supportNotification', {
+      // ✅ Send real-time notification if student is online
+      if (userSockets && userSockets.has(ticket.studentId.toString())) {
+        io.to(userSockets.get(ticket.studentId.toString())).emit('supportNotification', {
           type: notificationType,
           title: notificationTitle,
           message: notificationMessage,
@@ -3467,7 +3337,6 @@ app.put('/api/admin/support/tickets/:ticketId/status', authenticate, async (req,
     res.status(500).json({ message: 'Server error while updating ticket' });
   }
 });
-
 
 
 // Delete ticket (Admin)
@@ -3665,7 +3534,7 @@ app.post('/api/teams/send-request', authenticate, async (req, res) => {
 
 
 
-// Get incoming team requests for a student
+// // Get incoming team requests for a student
 app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
   try {
     console.log('Fetching incoming requests for user:', req.user.id);
@@ -3730,6 +3599,7 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
           if (leaderStudent) {
             const leaderNotification = new Notification({
               recipientId: leaderStudent._id,
+              recipientType: 'Student',
               type: 'team_request',
               title: 'New Member Awaiting Approval',
               message: `${currentStudent.name} accepted the invitation to join your team "${team.name}" and is awaiting your approval.`,
@@ -3770,6 +3640,7 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
 
       const notification = new Notification({
         recipientId: req.user.id,
+        recipientType: 'Student',
         type: 'team_rejected',
         title: 'Team is Full',
         message: `Cannot join team "${senderTeam.name}" - team is already full (4/4 members). Your request has been automatically canceled.`,
@@ -3906,6 +3777,7 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
           if (targetStudent) {
             const cancelNotification = new Notification({
               recipientId: pendingRequest.targetStudentId,
+              recipientType: 'Student',
               type: 'team_rejected',
               title: 'Team Invitation Canceled',
               message: `${currentStudent.name}'s invitation to join team "${pendingRequest.teamName}" has been automatically canceled because they joined another team.`,
@@ -3957,6 +3829,7 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
           for (const pendingRequest of pendingRequests) {
             const cancelNotification = new Notification({
               recipientId: pendingRequest.targetStudentId,
+              recipientType: 'Student',
               type: 'team_rejected',
               title: 'Team Invitation Canceled',
               message: `Your invitation to join team "${finalTeam.name}" has been automatically canceled because the team is now full (4/4 members).`,
@@ -4027,6 +3900,7 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
     // Create success notification for sender
     const senderNotification = new Notification({
       recipientId: request.senderId,
+      recipientType: 'Student',
       type: 'team_accepted',
       title: 'New Team Member Joined!',
       message: `${currentStudent.name} accepted your invitation and joined team "${finalTeam.name}"! (${finalTeam.members.length}/4 members)`,
@@ -4047,6 +3921,17 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
     request.responseDate = new Date();
     await request.save();
 
+
+    clearUserCache(req.user.id); // Clear cache for accepting user
+    clearUserCache(request.senderId.toString()); // Clear cache for sender
+
+    const cacheKey = `requests_${req.user.id}`;
+    requestCache.delete(cacheKey);
+    
+    // ✅ NEW: Clear sender's cache too
+    const senderCacheKey = `requests_${request.senderId}`;
+    requestCache.delete(senderCacheKey);
+
     console.log(`✅ Team request accepted successfully. Team now has ${finalTeam.members.length}/4 members`);
 
     res.json({
@@ -4056,7 +3941,8 @@ app.post('/api/teams/accept-request', authenticate, async (req, res) => {
       memberCount: finalTeam.members.length,
       isTeamFull: finalTeam.members.length >= 4,
       teamStatus: finalTeam.status,
-      cancelledRequests: cancelledRequestsCount
+      cancelledRequests: cancelledRequestsCount,
+      refreshCache: true
     });
 
   } catch (error) {
@@ -4087,7 +3973,8 @@ app.post('/api/teams/reject-request', authenticate, async (req, res) => {
     // 🔹 Create notification for the sender so they know it was declined
     const rejector = await Student.findById(req.user.id);
     const notification = new Notification({
-      recipientId: request.senderId, // Notify the original sender
+      recipientId: request.senderId,
+      recipientType: 'Student', // Notify the original sender
       type: 'team_rejected',
       title: 'Team Invitation Declined',
       message: `${rejector.name} has declined your invitation to join team "${request.teamName}".`,
@@ -4527,6 +4414,31 @@ app.get('/api/students/my-grades', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Get student grades error:', error);
     res.status(500).json({ message: 'Server error while fetching grades' });
+  }
+});
+
+// Get student's meetings
+app.get('/api/students/meetings', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ message: 'Access denied: Students only' });
+    }
+
+    const meetings = await Meeting.find({
+      'attendees.studentId': req.user.id
+    })
+    .populate('teamId', 'name')
+    .sort({ scheduledDateTime: -1 })
+    .lean();
+
+    res.json({
+      success: true,
+      meetings
+    });
+
+  } catch (error) {
+    console.error('Get student meetings error:', error);
+    res.status(500).json({ message: 'Failed to fetch meetings' });
   }
 });
 
@@ -5086,6 +4998,7 @@ app.post('/api/teams/:teamId/handle-join-request', authenticate, async (req, res
       const notification = new Notification({
         recipientId: joinRequest.studentId,
         type: 'team_accepted', // Add this to your enum
+        recipientType: 'Student',
         title: 'Team Request Accepted!',
         message: `Your request to join team "${team.name}" has been accepted!`,
         data: {
@@ -5212,6 +5125,7 @@ if (!requestingStudent) {
       }
       const notification = new Notification({
         recipientId: joinRequest.studentId,
+        recipientType: 'Student',
         type: 'team_rejected',
         title: 'Team Request Declined',
 message: rejectionRecord.rejectionCount >= 3 
@@ -5575,6 +5489,7 @@ app.post('/api/teams/:teamId/remove-member', authenticate, async (req, res) => {
     if (removedStudent) {
       const notification = new Notification({
         recipientId: removedStudent._id,
+        recipientType: 'Student',
         type: 'general',
         title: 'Removed from Team',
         message: `You have been removed from team "${team.name}" by team leader ${currentUser.name}.`,
@@ -5688,6 +5603,7 @@ app.post('/api/faculty/teams/:teamId/remove-member', authenticate, async (req, r
       if (newLeader) {
         const leaderNotification = new Notification({
           recipientId: newLeader._id,
+          recipientType: 'Student',
           type: 'general',
           title: 'You Are Now Team Leader',
           message: `You have been made the leader of team "${team.name}" after the previous leader was removed by supervisor.`,
@@ -5814,7 +5730,8 @@ if (!targetStudentDoc) {
 
     // ✅ NEW: Create in-app notification for the new leader
 const leaderNotification = new Notification({
-  recipientId: targetStudentDoc._id, // sending to the new leader
+  recipientId: targetStudentDoc._id,
+  recipientType: 'Student', // sending to the new leader
   type: 'general', // or make a new type 'leadership_transfer'
   title: 'You are now the Team Leader',
   message: `You have been made the leader of team "${team.name}" by ${currentUser.name}.`,
@@ -6263,25 +6180,32 @@ app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
 
 
 // Replace around line 2800-2900
+// Get incoming team requests for a student - FIXED VERSION
 app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
   try {
     const cacheKey = `requests_${req.user.id}`;
     const cached = requestCache.get(cacheKey);
     
-    if (cached && (Date.now() - cached.timestamp) < 1000) {
+    // Clear cache or reduce cache time to ensure fresh data
+if (!forceRefresh && cached && (Date.now() - cached.timestamp) < 500) {
+      console.log(`📋 Returning cached requests for user ${req.user.id}: ${cached.data.length} requests`);
       return res.json(cached.data);
     }
     
+    // ✅ FIXED: Only get truly pending requests
     const requests = await TeamRequest.find({
       targetStudentId: req.user.id,
-      status: 'pending'
+      status: 'pending' // Only pending, not awaiting_leader or accepted
     })
     .populate('senderId', 'name studentId email')
-    .sort({ sentDate: -1 });
+    .sort({ sentDate: -1 })
+    .lean();
 
-    // ✅ FIX: Filter out requests with null sender
+    // ✅ Filter out requests with null sender and double-check status
     const validRequests = requests.filter(request => 
-      request.senderId && request.senderId._id
+      request.senderId && 
+      request.senderId._id &&
+      request.status === 'pending'
     );
 
     requestCache.set(cacheKey, {
@@ -6289,6 +6213,7 @@ app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
       timestamp: Date.now()
     });
     
+    console.log(`✅ Returning ${validRequests.length} pending requests for user ${req.user.id}`);
     res.json(validRequests);
   } catch (error) {
     console.error('Get incoming requests error:', error);
@@ -6296,6 +6221,43 @@ app.get('/api/teams/requests/incoming', authenticate, async (req, res) => {
   }
 });
 
+
+// ✅ NEW: Force refresh pending requests endpoint
+app.get('/api/teams/requests/incoming/refresh', authenticate, async (req, res) => {
+  try {
+    // Clear cache first
+    const cacheKey = `requests_${req.user.id}`;
+    requestCache.delete(cacheKey);
+    
+    // Get fresh data
+    const requests = await TeamRequest.find({
+      targetStudentId: req.user.id,
+      status: 'pending'
+    })
+    .populate('senderId', 'name studentId email')
+    .sort({ sentDate: -1 })
+    .lean();
+
+    const validRequests = requests.filter(request => 
+      request.senderId && 
+      request.senderId._id &&
+      request.status === 'pending'
+    );
+
+    console.log(`🔄 Force refreshed: ${validRequests.length} pending requests for user ${req.user.id}`);
+    
+    res.json({
+      success: true,
+      requests: validRequests,
+      count: validRequests.length,
+      refreshed: true
+    });
+    
+  } catch (error) {
+    console.error('Force refresh requests error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 
 // Send a chat message
@@ -6709,7 +6671,7 @@ app.post('/api/agora/token', authenticate, async (req, res) => {
 const corsOptions = {
   origin: [
     'http://localhost:3000', // Development
-    'https://supervise-me.onrender.com', // Production
+    'https://supervise-me.netlify.app', // Production
   ],
   credentials: true,
   optionsSuccessStatus: 200
@@ -7604,7 +7566,36 @@ app.put('/api/notifications/:notificationId/read', authenticate, async (req, res
 // ===== END OF AUTOMATIC GROUP CREATION SYSTEM =====
 
 // ✅ OPTIONAL: Add Socket.IO for real-time notifications
+const http = require('http');
+const socketIo = require('socket.io');
 
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: {
+    origin: process.env.REACT_APP_CLIENT_URL || "http://localhost:3000",
+    methods: ["GET", "POST"]
+  }
+});
+
+// Store user socket connections
+const userSockets = new Map();
+
+io.on('connection', (socket) => {
+  socket.on('join', (userId) => {
+    userSockets.set(userId, socket.id);
+    console.log(`User ${userId} connected with socket ${socket.id}`);
+  });
+
+  socket.on('disconnect', () => {
+    for (let [userId, socketId] of userSockets.entries()) {
+      if (socketId === socket.id) {
+        userSockets.delete(userId);
+        console.log(`User ${userId} disconnected`);
+        break;
+      }
+    }
+  });
+});
 
 // Helper function to emit notification
 const emitNotification = (userId, notification) => {
@@ -8846,6 +8837,7 @@ app.post('/api/teams/approve-member-request', authenticate, async (req, res) => 
       // ✅ Create notification for target student
       const notification = new Notification({
         recipientId: request.targetStudentId._id,
+        recipientType: 'Student',
         type: 'team_accepted',
         title: 'Team Request Approved!',
         message: `Your request to join team "${team.name}" has been approved by team leader ${student.name}!`,
@@ -8917,6 +8909,7 @@ app.post('/api/teams/approve-member-request', authenticate, async (req, res) => 
       // Create notification for target student
       const notification = new Notification({
         recipientId: request.targetStudentId._id,
+        recipientType: 'Student',
         type: 'team_rejected',
         title: 'Team Request Declined',
         message: `Your request to join team "${team.name}" was declined by team leader ${student.name}.`,
@@ -9889,6 +9882,7 @@ const createMaterialNotifications = async (material) => {
     for (const studentId of recipients) {
       const notification = new Notification({
         recipientId: studentId,
+        recipientType: 'Student',
         type: 'general',
         title: 'New Learning Material Available',
         message: `${material.uploadedByName} has shared a new material: "${material.title}"`,
@@ -12602,87 +12596,277 @@ app.get('/api/admin/deliverables/pending-count', authenticate, async (req, res) 
 });
 
 
-// Add these endpoints after your existing routes in server.js
+// Add these endpoints after your existing API routes in server.js
 
-// Get enrollment statistics
+// Generate unique meeting ID and room ID
+const generateMeetingId = () => {
+  return 'meet-' + crypto.randomBytes(16).toString('hex');
+};
+
+const generateRoomId = () => {
+  return crypto.randomBytes(8).toString('hex').toUpperCase();
+};
+
+// Schedule a meeting (Faculty only)
+// Schedule a meeting (Faculty only) - FIXED VERSION
+app.post('/api/faculty/meetings/schedule', authenticate, async (req, res) => {
+  try {
+    const { teamId, title, description, scheduledDateTime, duration, meetingLink } = req.body;
+    
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    // Validation
+    if (!teamId || !title || !scheduledDateTime || !meetingLink) {
+      return res.status(400).json({ 
+        message: 'Team ID, title, scheduled date/time, and meeting link are required' 
+      });
+    }
+
+    // Validate meeting link format
+    if (!isValidUrl(meetingLink)) {
+      return res.status(400).json({ 
+        message: 'Please provide a valid meeting link (URL)' 
+      });
+    }
+
+    const faculty = await Faculty.findById(req.user.id);
+    if (!faculty) {
+      return res.status(404).json({ message: 'Faculty not found' });
+    }
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Verify faculty is supervisor of this team
+    if (!team.currentSupervisor || team.currentSupervisor.facultyId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'You can only schedule meetings for teams you supervise' });
+    }
+
+    // ✅ Generate roomId from meeting link or create unique ID
+    let roomId;
+    try {
+      const url = new URL(meetingLink);
+      if (url.hostname.includes('meet.google.com')) {
+        roomId = url.pathname.split('/').pop() || crypto.randomBytes(8).toString('hex');
+      } else if (url.hostname.includes('zoom.us')) {
+        roomId = url.pathname.split('/j/')[1]?.split('?')[0] || crypto.randomBytes(8).toString('hex');
+      } else {
+        roomId = crypto.randomBytes(8).toString('hex');
+      }
+    } catch (urlError) {
+      roomId = crypto.randomBytes(8).toString('hex');
+    }
+
+    const meetingId = `meeting_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+
+    // ✅ FIXED: Fetch actual student ObjectIds for attendees
+    const attendees = [];
+    for (const member of team.members) {
+      const student = await Student.findOne({ studentId: member.studentId });
+      if (student) {
+        attendees.push({
+          studentId: student._id, // ✅ Use actual ObjectId instead of null
+          studentName: member.name,
+          studentEmail: member.email,
+          status: 'invited'
+        });
+      }
+    }
+
+    // Create meeting
+    const meeting = new Meeting({
+      meetingId: meetingId,
+      teamId: team._id,
+      teamName: team.name,
+      supervisorId: req.user.id,
+      supervisorName: faculty.name,
+      title: title,
+      description: description || '',
+      scheduledDateTime: new Date(scheduledDateTime),
+      duration: duration || 60,
+      meetingLink: meetingLink,
+      roomId: roomId,
+      attendees: attendees, // ✅ Now contains proper student ObjectIds
+      status: 'scheduled'
+    });
+
+    await meeting.save();
+
+    // Send notifications to team members
+    for (const member of team.members) {
+      try {
+        const student = await Student.findOne({ studentId: member.studentId });
+        if (student) {
+          const notification = new Notification({
+            recipientId: student._id,
+            recipientType: 'Student',
+            type: 'general',
+            title: 'Meeting Scheduled',
+            message: `Your supervisor ${faculty.name} has scheduled a meeting: "${title}"`,
+            data: {
+              meetingId: meeting.meetingId,
+              teamId: team._id.toString(),
+              teamName: team.name,
+              scheduledDateTime: scheduledDateTime,
+              meetingLink: meetingLink,
+              action: 'meeting_scheduled'
+            },
+            read: false
+          });
+          await notification.save();
+        }
+      } catch (notifError) {
+        console.error('Error creating meeting notification:', notifError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Meeting scheduled successfully',
+      meeting: {
+        meetingId: meeting.meetingId,
+        title: meeting.title,
+        scheduledDateTime: meeting.scheduledDateTime,
+        duration: meeting.duration,
+        meetingLink: meeting.meetingLink,
+        roomId: meeting.roomId,
+        attendees: meeting.attendees,
+        status: meeting.status
+      }
+    });
+
+  } catch (error) {
+    console.error('Schedule meeting error:', error);
+    res.status(500).json({ 
+      message: 'Failed to schedule meeting',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
+    });
+  }
+});
+
+
+// Get faculty's scheduled meetings
+app.get('/api/faculty/meetings', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'faculty') {
+      return res.status(403).json({ message: 'Access denied: Faculty only' });
+    }
+
+    const meetings = await Meeting.find({
+      supervisorId: req.user.id
+    })
+    .populate('teamId', 'name members')
+    .sort({ scheduledDateTime: -1 })
+    .lean();
+
+    res.json({
+      success: true,
+      meetings
+    });
+
+  } catch (error) {
+    console.error('Get meetings error:', error);
+    res.status(500).json({ message: 'Failed to fetch meetings' });
+  }
+});
+
+
+// Join meeting by room ID
+app.get('/api/meetings/join/:roomId', authenticate, async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    
+    const meeting = await Meeting.findOne({ roomId })
+      .populate('teamId', 'name members')
+      .populate('supervisorId', 'name email');
+
+    if (!meeting) {
+      return res.status(404).json({ message: 'Meeting not found' });
+    }
+
+    // Check if user is authorized to join
+    const isAuthorized = 
+      meeting.supervisorId._id.toString() === req.user.id ||
+      meeting.attendees.some(attendee => attendee.studentId.toString() === req.user.id);
+
+    if (!isAuthorized) {
+      return res.status(403).json({ message: 'You are not authorized to join this meeting' });
+    }
+
+    res.json({
+      success: true,
+      meeting: {
+        meetingId: meeting.meetingId,
+        roomId: meeting.roomId,
+        title: meeting.title,
+        description: meeting.description,
+        scheduledDateTime: meeting.scheduledDateTime,
+        duration: meeting.duration,
+        teamName: meeting.teamName,
+        supervisorName: meeting.supervisorName,
+        status: meeting.status
+      }
+    });
+
+  } catch (error) {
+    console.error('Join meeting error:', error);
+    res.status(500).json({ message: 'Failed to join meeting' });
+  }
+});
+
+
+// ===== REPORTS API ENDPOINTS =====
+
+// Get enrollment statistics report
 app.get('/api/admin/reports/enrollment', authenticate, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
-    const { startDate, endDate } = req.query;
-    
-    // Get total student counts by program
+    // Get students by program
     const studentsByProgram = await Student.aggregate([
-      {
-        $match: {
-          status: 'Active',
-          ...(startDate && endDate && {
-            enrolled: {
-              $gte: new Date(startDate),
-              $lte: new Date(endDate)
-            }
-          })
-        }
-      },
+      { $match: { status: 'Active' } },
       {
         $group: {
           _id: '$program',
-          count: { $sum: 1 },
+          students: { $sum: 1 },
           avgCGPA: { $avg: '$cgpa' },
           avgCredits: { $avg: '$completedCredits' }
         }
       },
-      { $sort: { count: -1 } }
-    ]);
-
-    // Get team formation stats
-    const teamStats = await Team.aggregate([
       {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 }
+        $project: {
+          program: '$_id',
+          students: 1,
+          avgCGPA: { $round: ['$avgCGPA', 2] },
+          avgCredits: { $round: ['$avgCredits', 1] }
         }
       }
     ]);
 
-    // Get students in teams vs not in teams
-    const studentsInTeams = await Team.aggregate([
-      { $unwind: '$members' },
-      {
-        $group: {
-          _id: null,
-          totalStudentsInTeams: { $sum: 1 }
-        }
-      }
-    ]);
+    // Get team formation statistics
+    const totalStudents = await Student.countDocuments({ status: 'Active' });
+    const teams = await Team.find({});
+    const studentsInTeams = teams.reduce((sum, team) => sum + team.members.length, 0);
+    const studentsNotInTeams = totalStudents - studentsInTeams;
+    const teamFormationRate = totalStudents > 0 ? (studentsInTeams / totalStudents * 100).toFixed(1) : 0;
 
-    const totalActiveStudents = await Student.countDocuments({ status: 'Active' });
-    const studentsInTeamsCount = studentsInTeams[0]?.totalStudentsInTeams || 0;
-    const studentsNotInTeams = totalActiveStudents - studentsInTeamsCount;
-
-    res.json({
-      success: true,
-      data: {
-        studentsByProgram: studentsByProgram.map(item => ({
-          program: item._id || 'Undecided',
-          students: item.count,
-          avgCGPA: parseFloat(item.avgCGPA?.toFixed(2)) || 0,
-          avgCredits: parseFloat(item.avgCredits?.toFixed(1)) || 0
-        })),
-        teamStats: teamStats.reduce((acc, item) => {
-          acc[item._id] = item.count;
-          return acc;
-        }, {}),
-        teamFormation: {
-          studentsInTeams: studentsInTeamsCount,
-          studentsNotInTeams: studentsNotInTeams,
-          totalStudents: totalActiveStudents,
-          teamFormationRate: ((studentsInTeamsCount / totalActiveStudents) * 100).toFixed(1)
-        }
+    const data = {
+      studentsByProgram,
+      teamFormation: {
+        totalStudents,
+        studentsInTeams,
+        studentsNotInTeams,
+        teamFormationRate: parseFloat(teamFormationRate)
       }
-    });
+    };
+
+    res.json({ success: true, data });
 
   } catch (error) {
     console.error('Enrollment report error:', error);
@@ -12697,91 +12881,83 @@ app.get('/api/admin/reports/faculty', authenticate, async (req, res) => {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
+    // Get faculty with their supervised teams and board memberships
     const facultyWorkload = await Faculty.aggregate([
-      {
-        $match: { status: 'Active' }
-      },
+      { $match: { status: 'Active' } },
       {
         $lookup: {
           from: 'teams',
-          let: { facultyId: '$_id' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $eq: ['$currentSupervisor.facultyId', '$$facultyId']
-                }
-              }
-            }
-          ],
+          localField: '_id',
+          foreignField: 'currentSupervisor.facultyId',
           as: 'supervisedTeams'
         }
       },
       {
         $lookup: {
           from: 'boards',
-          let: { facultyId: '$_id' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $in: ['$$facultyId', '$faculty._id']
-                }
+          localField: '_id',
+          foreignField: 'faculty._id',
+          as: 'boardMemberships'
+        }
+      },
+      {
+        $addFields: {
+          supervisedTeams: { $size: '$supervisedTeams' },
+          boardMemberships: { $size: '$boardMemberships' },
+          totalStudents: {
+            $sum: {
+              $map: {
+                input: '$supervisedTeams',
+                as: 'team',
+                in: { $size: '$$team.members' }
               }
             }
-          ],
-          as: 'boardMemberships'
+          },
+          workloadScore: {
+            $add: [
+              { $multiply: [{ $size: '$supervisedTeams' }, 10] },
+              { $multiply: [{ $size: '$boardMemberships' }, 5] }
+            ]
+          }
         }
       },
       {
         $project: {
           name: 1,
+          email: 1,
           department: 1,
-          supervisedTeamsCount: { $size: '$supervisedTeams' },
-          boardMembershipsCount: { $size: '$boardMemberships' },
-          totalStudents: {
-            $reduce: {
-              input: '$supervisedTeams',
-              initialValue: 0,
-              in: { $add: ['$$value', { $size: '$$this.members' }] }
-            }
-          }
+          supervisedTeams: 1,
+          boardMemberships: 1,
+          totalStudents: 1,
+          workloadScore: 1
         }
       },
-      { $sort: { supervisedTeamsCount: -1 } }
+      { $sort: { workloadScore: -1 } }
     ]);
 
-    // Department-wise distribution
+    // Get department statistics
     const departmentStats = await Faculty.aggregate([
-      {
-        $match: { status: 'Active' }
-      },
+      { $match: { status: 'Active' } },
       {
         $group: {
           _id: '$department',
           facultyCount: { $sum: 1 }
         }
       },
-      { $sort: { facultyCount: -1 } }
+      {
+        $project: {
+          department: '$_id',
+          facultyCount: 1
+        }
+      }
     ]);
 
-    res.json({
-      success: true,
-      data: {
-        facultyWorkload: facultyWorkload.map(faculty => ({
-          name: faculty.name,
-          department: faculty.department,
-          supervisedTeams: faculty.supervisedTeamsCount,
-          boardMemberships: faculty.boardMembershipsCount,
-          totalStudents: faculty.totalStudents,
-          workloadScore: (faculty.supervisedTeamsCount * 3) + faculty.boardMembershipsCount
-        })),
-        departmentStats: departmentStats.map(dept => ({
-          department: dept._id || 'Unassigned',
-          facultyCount: dept.facultyCount
-        }))
-      }
-    });
+    const data = {
+      facultyWorkload,
+      departmentStats
+    };
+
+    res.json({ success: true, data });
 
   } catch (error) {
     console.error('Faculty report error:', error);
@@ -12796,20 +12972,38 @@ app.get('/api/admin/reports/projects', authenticate, async (req, res) => {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
-    // Teams by phase
-    const teamsByPhase = await Team.aggregate([
+    // Get phase distribution
+    const phaseDistribution = await Team.aggregate([
       {
         $group: {
           _id: '$currentPhase',
-          count: { $sum: 1 },
+          teams: { $sum: 1 },
           avgMemberCount: { $avg: '$memberCount' }
         }
       },
-      { $sort: { _id: 1 } }
+      {
+        $project: {
+          phase: '$_id',
+          teams: 1,
+          avgMemberCount: { $round: ['$avgMemberCount', 1] }
+        }
+      },
+      { $sort: { phase: 1 } }
     ]);
 
-    // Teams by status
-    const teamsByStatus = await Team.aggregate([
+    // Get project progress statistics
+    const totalTeams = await Team.countDocuments();
+    const completedProjects = await Team.countDocuments({ 
+      projectCompleted: true 
+    });
+    const specialCaseTeams = await Team.countDocuments({ 
+      specialCase: true 
+    });
+    const completionRate = totalTeams > 0 ? 
+      (completedProjects / totalTeams * 100).toFixed(1) : 0;
+
+    // Get team status distribution
+    const teamStatusDistribution = await Team.aggregate([
       {
         $group: {
           _id: '$status',
@@ -12818,46 +13012,18 @@ app.get('/api/admin/reports/projects', authenticate, async (req, res) => {
       }
     ]);
 
-    // Project completion stats
-    const projectStats = await Team.aggregate([
-      {
-        $group: {
-          _id: null,
-          totalTeams: { $sum: 1 },
-          completedProjects: {
-            $sum: { $cond: [{ $eq: ['$projectCompleted', true] }, 1, 0] }
-          },
-          specialCaseTeams: {
-            $sum: { $cond: [{ $eq: ['$specialCase', true] }, 1, 0] }
-          }
-        }
-      }
-    ]);
+    const data = {
+      phaseDistribution,
+      projectProgress: {
+        totalTeams,
+        completedProjects,
+        specialCaseTeams,
+        completionRate: parseFloat(completionRate)
+      },
+      teamStatusDistribution
+    };
 
-    const stats = projectStats[0] || {};
-    const completionRate = stats.totalTeams > 0 ? 
-      ((stats.completedProjects / stats.totalTeams) * 100).toFixed(1) : 0;
-
-    res.json({
-      success: true,
-      data: {
-        phaseDistribution: teamsByPhase.map(phase => ({
-          phase: `Phase ${phase._id || 'A'}`,
-          teams: phase.count,
-          avgMemberCount: parseFloat(phase.avgMemberCount?.toFixed(1)) || 0
-        })),
-        statusDistribution: teamsByStatus.map(status => ({
-          status: status._id,
-          count: status.count
-        })),
-        projectProgress: {
-          totalTeams: stats.totalTeams || 0,
-          completedProjects: stats.completedProjects || 0,
-          specialCaseTeams: stats.specialCaseTeams || 0,
-          completionRate: parseFloat(completionRate)
-        }
-      }
-    });
+    res.json({ success: true, data });
 
   } catch (error) {
     console.error('Projects report error:', error);
@@ -12872,48 +13038,62 @@ app.get('/api/admin/reports/system', authenticate, async (req, res) => {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
-    const [
-      totalStudents,
-      totalFaculty,
-      totalTeams,
-      totalBoards,
-      supportTickets,
-      deliverables
-    ] = await Promise.all([
-      Student.countDocuments({ status: 'Active' }),
-      Faculty.countDocuments({ status: 'Active' }),
-      Team.countDocuments(),
-      Board.countDocuments({ isActive: true }),
-      SupportTicket.countDocuments(),
-      DeliverableSubmission.countDocuments()
-    ]);
+    // Get overview statistics
+    const totalStudents = await Student.countDocuments({ status: 'Active' });
+    const totalFaculty = await Faculty.countDocuments({ status: 'Active' });
+    const totalTeams = await Team.countDocuments();
+    const totalBoards = await Board.countDocuments({ isActive: true });
+    const supportTickets = await SupportTicket.countDocuments();
 
-    // Recent activity
-    const recentTeams = await Team.countDocuments({
-      createdDate: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    // Get recent activity (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const newTeamsThisWeek = await Team.countDocuments({
+      createdDate: { $gte: sevenDaysAgo }
     });
 
-    const recentTickets = await SupportTicket.countDocuments({
-      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    const newTicketsThisWeek = await SupportTicket.countDocuments({
+      submittedAt: { $gte: sevenDaysAgo }
     });
 
-    res.json({
-      success: true,
-      data: {
-        overview: {
-          totalStudents,
-          totalFaculty,
-          totalTeams,
-          totalBoards,
-          supportTickets,
-          deliverables
-        },
-        recentActivity: {
-          newTeamsThisWeek: recentTeams,
-          newTicketsThisWeek: recentTickets
+    // Get user activity by status
+    const studentsByStatus = await Student.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
         }
       }
-    });
+    ]);
+
+    const facultyByDepartment = await Faculty.aggregate([
+      { $match: { status: 'Active' } },
+      {
+        $group: {
+          _id: '$department',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const data = {
+      overview: {
+        totalStudents,
+        totalFaculty,
+        totalTeams,
+        totalBoards,
+        supportTickets
+      },
+      recentActivity: {
+        newTeamsThisWeek,
+        newTicketsThisWeek
+      },
+      studentsByStatus,
+      facultyByDepartment
+    };
+
+    res.json({ success: true, data });
 
   } catch (error) {
     console.error('System report error:', error);
@@ -12921,154 +13101,6 @@ app.get('/api/admin/reports/system', authenticate, async (req, res) => {
   }
 });
 
-
-// Start team meeting
-app.post('/api/teams/:teamId/start-meeting', authenticate, async (req, res) => {
-  try {
-    const { teamId } = req.params;
-    const { startedBy, startedByStudentId } = req.body;
-    
-    const team = await Team.findById(teamId);
-    if (!team) {
-      return res.status(404).json({ message: 'Team not found' });
-    }
-    
-    // Verify user is team member
-    const isMember = team.members.some(member => 
-      member.studentId === startedByStudentId
-    );
-    
-    if (!isMember) {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-    
-    // Check if there's already an active meeting for this team
-    let meetingInfo = activeTeamMeetings.get(teamId);
-    
-    if (meetingInfo) {
-      // Meeting already exists, return existing meeting ID
-      console.log(`User ${startedBy} joining existing meeting for team ${team.name}`);
-      
-      return res.json({
-        success: true,
-        meetingId: meetingInfo.meetingId,
-        message: 'Joining existing team meeting',
-        isJoining: true,
-        startedBy: meetingInfo.startedBy,
-        startTime: meetingInfo.startTime
-      });
-    }
-    
-    // No active meeting, create new one
-    const meetingId = `team-${teamId}-${Date.now()}`;
-    
-    meetingInfo = {
-      meetingId,
-      teamId,
-      startedBy,
-      startedByStudentId,
-      startTime: new Date(),
-      participants: new Set([startedByStudentId])
-    };
-    
-    activeTeamMeetings.set(teamId, meetingInfo);
-    
-    // Notify all team members
-    const teamMemberStudents = await Student.find({
-      studentId: { $in: team.members.map(m => m.studentId) }
-    });
-    
-    for (const student of teamMemberStudents) {
-      if (student.studentId !== startedByStudentId) {
-        const notification = new Notification({
-          recipientId: student._id,
-          recipientType: 'Student',
-          type: 'general',
-          title: 'Team Meeting Started',
-          message: `${startedBy} started a team meeting. Click to join!`,
-          data: {
-            meetingId,
-            teamId,
-            startedBy,
-            action: 'join_meeting'
-          },
-          read: false
-        });
-        await notification.save();
-        
-        // Send real-time notification if user is online
-        const userSocketId = userSockets.get(student._id.toString());
-        if (userSocketId) {
-          io.to(userSocketId).emit('meeting-invitation', {
-            meetingId,
-            teamName: team.name,
-            startedBy,
-            teamId
-          });
-        }
-      }
-    }
-    
-    res.json({
-      success: true,
-      meetingId,
-      message: 'Meeting started and invitations sent',
-      isJoining: false
-    });
-    
-  } catch (error) {
-    console.error('Start meeting error:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-
-app.get('/api/teams/:teamId/active-meeting', authenticate, async (req, res) => {
-  try {
-    const { teamId } = req.params;
-    
-    const team = await Team.findById(teamId);
-    if (!team) {
-      return res.status(404).json({ message: 'Team not found' });
-    }
-    
-    const meetingInfo = activeTeamMeetings.get(teamId);
-    
-    if (meetingInfo) {
-      return res.json({
-        hasActiveMeeting: true,
-        meetingId: meetingInfo.meetingId,
-        startedBy: meetingInfo.startedBy,
-        startTime: meetingInfo.startTime,
-        participantCount: meetingInfo.participants.size
-      });
-    }
-    
-    res.json({ hasActiveMeeting: false });
-    
-  } catch (error) {
-    console.error('Check active meeting error:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-// End team meeting
-app.post('/api/teams/:teamId/end-meeting', authenticate, async (req, res) => {
-  try {
-    const { teamId } = req.params;
-    const { meetingId, duration, participantCount, endedBy } = req.body;
-    
-    // Remove meeting from active meetings
-    activeTeamMeetings.delete(teamId);
-    
-    console.log(`Meeting ${meetingId} ended by ${endedBy}. Duration: ${duration}min, Participants: ${participantCount}`);
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('End meeting error:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
 
 
 app.use(cors(corsOptions));
